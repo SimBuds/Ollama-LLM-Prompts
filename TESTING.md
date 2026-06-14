@@ -138,119 +138,126 @@ Add tasks in:
 ## Current Benchmark Snapshot
 
 Latest full head-to-head: `gemma` (`gemma4:12b-it-q4_K_M`) vs `qwen`
-(`qwen3.6:35b-a3b-mtp-q4_K_M`) on 2026-06-09. Speed, coding, content,
-learning, and the leak-gated tutor runner completed that pass. The JSON runner
-was added afterward and first ran against both models on 2026-06-10.
+(`qwen3.6:35b-a3b-mtp-q4_K_M`) on 2026-06-14, a full `standard` pass across all
+six suites (3 attempts/task). The run artifacts are present under `eval/runs/`
+and linked per suite below.
 
-Two caveats on the tables below. First, the raw run artifacts behind them were
-lost on 2026-06-10 (an errant cleanup deleted `eval/runs/`); the run IDs are
-kept as provenance labels, but these tables are now the only record. Second,
-the task set expanded on 2026-06-10 (coding 6→9, JSON 3→7, content 1→3 tasks)
-and summaries gained uncertainty reporting, so these pre-expansion numbers are
-not directly comparable to new runs. Re-run `standard` before leaning on them.
+Two caveats on reading the tables. First, samples are small (n = 9–27 per
+model): several suites carry a "tied within threshold" flag and wide Wilson
+intervals, so treat one-task or sub-5-point edges as noise. Second, the
+learn/tutor /10 scores rest on a 2-model leave-one-out panel — a single judge
+per response — so they are soft signal until a third judge model joins. Where
+quality ties, the tables break on speed and GPU residency, which favor `gemma`.
 
 ### Speed (`run-speed.py`)
 
-Run: `eval/runs/20260609T101024Z/speed/summary.md`
+Run: `eval/runs/20260614T200816Z/speed/summary.md`
 
 | Rank | Model | Think | Gen tok/s | Prompt tok/s | Load | Size | GPU/CPU split |
 |---|---|---|---:|---:|---:|---:|---|
-| 1 | `gemma` | off | 58.3 | 16902 | 13.6s | 7.7 GB | 100% GPU |
-| 2 | `qwen` | off | 40.6 | 1689 | 0.3s | 28 GB | 75%/25% CPU/GPU |
+| 1 | `gemma` | off | 54.0 | 17562 | 11.5s | 7.7 GB | 100% GPU |
+| 2 | `qwen` | off | 46.7 | 1680 | 13.2s | 29 GB | 74%/26% CPU/GPU |
 
-Finding: Gemma is the fast local default. Qwen remains usable despite heavy CPU
-spill, but it pays a load-time and throughput cost.
+Finding: Gemma is the fast local default. The widest gap is in prompt ingestion —
+17.6k vs 1.7k tok/s (~10×) — which is why Gemma also wins end-to-end latency on
+the JSON and content suites. Qwen remains usable despite heavy CPU spill.
 
 ### Coding (`run-code.py`)
 
-Run: `eval/runs/20260609T101105Z/code/summary.md`
+Run: `eval/runs/20260614T200906Z/code/summary.md`
 
 | Rank | Model | Pass rate | Passed | Avg s | Tok/s |
 |---|---|---:|---:|---:|---:|
-| 1 | `qwen` | 100% | 30/30 | 4.8 | 57 |
-| 2 | `gemma` | 97% | 29/30 | 5.1 | 60 |
+| 1 | `qwen` | 96% | 26/27 | 3.8 | 59 |
+| 2 | `gemma` | 96% | 26/27 | 4.1 | 54 |
 
-Per task:
+Per task (passed / 3):
 
-| Model | two_sum | valid_parentheses | merge_intervals | lru_cache | edit_distance | calc |
-|---|---:|---:|---:|---:|---:|---:|
-| `qwen` | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 |
-| `gemma` | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 | 4/5 |
+| Model | two_sum | valid_parentheses | merge_intervals | lru_cache | edit_distance | calc | decode_string | coin_change | flatten_dict |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `qwen` | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 2/3 | 3/3 | 3/3 |
+| `gemma` | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 2/3 | 3/3 | 3/3 | 3/3 |
 
-Finding: Qwen is the current coding leader. Gemma's single miss was again on
-`calc`, the suite's known operator-precedence stress task (improved from 2/5 to
-4/5 versus the prior run).
+Finding: Dead tie at 26/27, flagged within the tie threshold (was Qwen 30/30 vs
+Gemma 29/30 on the smaller 6-task set). Each model dropped one attempt: Gemma on
+`calc` (its repeatable operator-precedence weak spot), Qwen on `decode_string`.
+With quality level, the tie-break on speed/GPU residency favors Gemma.
 
 ### Content (`run-content.py`)
 
-Run: `eval/runs/20260609T101604Z/content/summary.md`
+Run: `eval/runs/20260614T201250Z/content/summary.md`
 
-| Rank | Model | Clean rate | Clean | Avg s | Tok/s | Avg words | Keyword hits |
-|---|---|---:|---:|---:|---:|---:|---|
-| 1 | `gemma` | 100% | 5/5 | 10.1 | 60 | 388 | 3-4 |
-| 2 | `qwen` | 100% | 5/5 | 15.5 | 35 | 322 | 2-4 |
+| Rank | Model | Clean rate | Clean | Avg s | Tok/s | Avg words |
+|---|---|---:|---:|---:|---:|---:|
+| 1 | `gemma` | 100% | 9/9 | 6.6 | 54 | 224 |
+| 2 | `qwen` | 78% | 7/9 | 11.7 | 33 | 227 |
 
-Finding: Both models were 5/5 clean this pass. Gemma keeps the content/SEO pick
-on speed (60 vs 35 tok/s, fully on GPU); Qwen closed the format gap from the
-prior run.
+Per task (clean / 3):
+
+| Model | seo_product | tech_explain | md_brief |
+|---|---:|---:|---:|
+| `gemma` | 3/3 | 3/3 | 3/3 |
+| `qwen` | 3/3 | 1/3 | 3/3 |
+
+Finding: Gemma sweeps 9/9 and is ~2× faster (6.6s vs 11.7s, fully on GPU). Qwen
+regressed on the expanded set, missing `tech_explain` 2/3 on format/instruction
+rules. Gemma keeps the content/SEO pick decisively.
 
 ### Learning (`run-learn.py`)
 
-Run: `eval/runs/20260609T101812Z/learn/summary.md`
+Run: `eval/runs/20260614T201857Z/learn/summary.md`
 
 | Rank | Model | Teach /10 | Code pass | Explanation /10 | Expl. when correct |
 |---|---|---:|---:|---:|---:|
-| 1 | `qwen` | 9.9 | 12/12 | 9.9 | 9.9 |
-| 2 | `gemma` | 9.4 | 12/12 | 9.4 | 9.4 |
+| 1 | `gemma` | 9.7 | 12/12 | 9.7 | 9.7 |
+| 2 | `qwen` | 9.2 | 11/12 | 10.0 | 10.0 |
 
-Finding: Both models passed every code gate. Qwen again won explanation quality
-in the leave-one-out judge panel.
+Finding: Flipped from the prior pass (Qwen 9.9 vs Gemma 9.4), but within the
+0.5/10 tie threshold. Qwen still writes the better explanation (10.0 vs 9.7); it
+lost the top spot only because it dropped a code gate (11/12). Single-judge
+panel — read as soft signal and effectively a tie.
 
 ### Tutor (`run-tutor.py`, leak-gated)
 
-Run: `eval/runs/20260609T102550Z/tutor/summary.md`
+Run: `eval/runs/20260614T202725Z/tutor/summary.md`
 
 | Rank | Model | Teach /10 | Leaks | Explanation /10 | Explanation (no leaks) /10 |
 |---|---|---:|---:|---:|---:|
-| 1 | `gemma` | 8.0 | 2/15 | 9.0 | 9.2 |
-| 2 | `qwen` | 5.9 | 6/15 | 9.7 | 9.8 |
+| 1 | `gemma` | 6.9 | 3/15 | 8.5 | 8.6 |
+| 2 | `qwen` | 3.8 | 9/15 | 9.3 | 9.5 |
 
-Finding: This is the inverse of the open learning run. Qwen explains better when
-it does not leak (9.8 vs 9.2), but it gives away the full solution far more often
-(6/15 vs 2/15), and the gate zeroes those attempts. Gemma's discipline makes it
-the leak-gated tutoring pick.
+Finding: The decisive split, and it widened. Qwen still explains better when it
+does not leak (9.5 vs 8.6), but it now gives away the full solution 9/15 (60%) of
+the time versus Gemma's 3/15, and the gate zeroes those attempts. Gemma is the
+clear leak-gated tutoring pick.
 
 ### JSON / long-context (`run-json.py`)
 
-Run: `eval/runs/20260610T100002Z/json/summary.md`
+Run: `eval/runs/20260614T201535Z/json/summary.md`
 
 | Rank | Model | Score | Valid JSON | Schema OK | Fact rate | Avg s | Tok/s |
 |---|---|---:|---:|---:|---:|---:|---:|
-| 1 | `gemma` | 100% | 100% | 100% | 100% | 3.3 | 50 |
-| 2 | `qwen` | 100% | 100% | 100% | 100% | 8.4 | 46 |
+| 1 | `gemma` | 100% | 100% | 100% | 100% | 2.9 | 50 |
+| 2 | `qwen` | 100% | 100% | 100% | 100% | 6.7 | 48 |
 
-Per task: both models scored 3/3 on `jd_extract`, `needle_recall`, and
-`decline_guard`.
+Per task: both models scored 3/3 on all seven tasks (`jd_extract`,
+`needle_recall`, `decline_guard`, `conflicting_correction`, `enum_classify`,
+`multi_extract`, `no_infer`).
 
-Finding: both models cleared the current structured-output smoke test. Gemma is
-the practical default for JSON-shaped consumer-app work when this suite is the
-only evidence, because it tied quality and won speed. This is still a small
-3-task, 3-attempt run, so treat it as a pass/fail gate plus speed tie-breaker.
-
-Note: the rebuilt `gemma` params (post-2026-06-09) are reflected in this JSON
-run, but not in the speed/coding/content/learning/tutor numbers above. Re-run
-the relevant suites before trusting those older numbers for the new build.
+Finding: both clear the structured-output suite at 100% (schema and facts) on the
+expanded 7-task set. Tied on quality, Gemma wins end-to-end latency (2.9s vs
+6.7s) on the strength of its prompt-ingest speed, so it stays the JSON default.
 
 ## Current Picks
 
 | Use | Pick | Basis |
 |---|---|---|
-| Fast local default | `gemma` | 58.3 tok/s, 100% GPU. |
-| Content / SEO / copy | `gemma` | 5/5 clean and ~2x faster than Qwen in latest content run. |
-| Structured JSON / consumer-app smoke tests | `gemma` | Tied Qwen at 100%, faster in the 2026-06-10 JSON run. |
-| Coding puzzles / small functions | `qwen` | 30/30 in latest coding run, including `calc` 5/5. |
-| Learning explanations | `qwen` | 9.9/10 in latest learning run, code 12/12. |
-| Leak-gated tutoring | `gemma` | 8.0/10 with only 2/15 leaks vs Qwen's 6/15. |
+| Fast local default | `gemma` | 54 tok/s, 100% GPU; ~10× Qwen's prompt-ingest speed. |
+| Content / SEO / copy | `gemma` | 9/9 clean vs Qwen 7/9, ~2× faster. |
+| Structured JSON / consumer-app smoke tests | `gemma` | Tied Qwen at 100%, ~2× faster latency (2.9s vs 6.7s). |
+| Coding puzzles / small functions | `gemma` / `qwen` (tie) | Tied 26/27; break on speed/GPU → Gemma. Gemma's only miss is `calc`. |
+| Learning explanations | `gemma` / `qwen` (tie) | Gemma 9.7 vs Qwen 9.2 (within threshold); Qwen explains better but dropped a code gate. |
+| Leak-gated tutoring | `gemma` | 6.9/10 with 3/15 leaks vs Qwen's 3.8 with 9/15. |
 
 ## Hardware
 
@@ -271,8 +278,8 @@ less punishing because only a subset of parameters is active per token.
 
 | Model | Status | Notes |
 |---|---|---|
-| `gemma` (`gemma4:12b-it-q4_K_M`) | current | Fast, fully on GPU in latest speed run, best content compliance. |
-| `qwen` (`qwen3.6:35b-a3b-mtp-q4_K_M`) | current | Best current coding/learning result; heavy CPU spill but usable. |
+| `gemma` (`gemma4:12b-it-q4_K_M`) | current | Wins or ties all six suites on 2026-06-14; fully on GPU, best content compliance, lowest latency. |
+| `qwen` (`qwen3.6:35b-a3b-mtp-q4_K_M`) | current | Ties coding/JSON and explains well, but regressed on content and leaks 60% in leak-gated tutoring; heavy CPU spill. |
 | `granite` (`granite4.1:8b-Q5_K_M`) | dropped | Strong prior coding runs, but no longer leads the current lineup. |
 | `qwen-custom` (`qwen3.5:9b`) | removed | Fast 9B-era thinking model; superseded by current Qwen3.6 MoE results. |
 | `ministral-custom` | removed | Strong historical #2; removed after Gemma/Granite consolidation. |
@@ -356,3 +363,22 @@ Full five-suite rerun:
 - Tutor (leak-gated, finally rerun): Gemma 8.0/10 with 2/15 leaks beats Qwen
   5.9/10 with 6/15 leaks. Qwen explains better when it does not leak but fails
   the gate more often, so Gemma is the tutoring pick.
+
+### Head-to-head update (2026-06-14)
+
+First full `standard` pass on the expanded task set (coding 9, content 3, JSON 7)
+with run artifacts retained under `eval/runs/`:
+
+- Speed: Gemma 54.0 tok/s (100% GPU) vs Qwen 46.7 (74%/26% CPU/GPU); Gemma's
+  prompt ingest ~10× Qwen's.
+- Coding: now a tie at 26/27 each (was Qwen 30/30 vs Gemma 29/30 on the 6-task
+  set). Gemma misses `calc`, Qwen misses `decode_string`.
+- Content: Gemma 9/9 vs Qwen 7/9 — Qwen regressed on `tech_explain`.
+- JSON: both 100% on 7 tasks; Gemma ~2× faster latency.
+- Learning: flipped to Gemma 9.7 vs Qwen 9.2 (within threshold) after Qwen
+  dropped a code gate (11/12); Qwen still scores higher on raw explanation.
+- Tutor: gap widened — Gemma 6.9/10 with 3/15 leaks vs Qwen 3.8/10 with 9/15.
+
+Net: the coding and learning picks that previously went to Qwen are now ties at
+best; Gemma wins or ties every suite and is the better hardware fit. Standing
+caveats: small n and a single-judge learn/tutor panel.

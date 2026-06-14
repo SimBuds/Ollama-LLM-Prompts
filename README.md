@@ -24,12 +24,12 @@ Current lineup:
 
 | Model | Base | ctx | Role |
 |---|---|---:|---|
-| `qwen` | `qwen3.6:35b-a3b-mtp-q4_K_M` | 32K Context | Patient reasoning/coding model; best coding and learning scores. |
-| `gemma` | `gemma4:12b-it-q4_K_M` | 32K Context | Content model; best content generation scores. |
+| `gemma` | `gemma4:12b-it-q4_K_M` | 32K Context | Fast all-rounder; wins or ties every suite, fully on GPU. |
+| `qwen` | `qwen3.6:35b-a3b-mtp-q4_K_M` | 32K Context | Patient reasoning model; ties coding/JSON, strong raw explanations. |
 
 `qwen` is a
 35B MoE/MTP model: it spills heavily to CPU, but still clears the local usability
-floor and wins the reasoning-heavy benchmarks.
+floor and stays competitive on the reasoning-heavy benchmarks.
 
 ## Quickstart
 
@@ -152,20 +152,22 @@ models:
     roles: [chat, edit, apply]
 ```
 
-Pick `qwen` for coding/reasoning and `gemma` for fast content per the
-leaderboard above. Continue auto-discovers Ollama, but listing the custom names
-keeps the prompt-stacked builds (not the raw bases) in the model picker.
+`gemma` is the fast default for content, JSON, and tutoring and now ties `qwen`
+on coding; pick `qwen` when you want its patient reasoning style. Continue
+auto-discovers Ollama, but listing the custom names keeps the prompt-stacked
+builds (not the raw bases) in the model picker.
 
 ### Cline
 
 In Cline's settings, set **API Provider** to `Ollama`, **Base URL** to
 `http://localhost:11434`, and **Model** to `qwen` or `gemma`. Cline is
-agentic/coding-heavy, so `qwen` is the better default there; switch to `gemma`
-when you want speed and the task is lighter.
+agentic/coding-heavy; the two now tie on coding, so `gemma` is the better default
+for its ~10× faster prompt ingestion and full-GPU speed, with `qwen` as the
+patient-reasoning alternative.
 
 Notes for both: keep `OLLAMA_KEEP_ALIVE` long enough to avoid reload churn when
 switching models, and remember `qwen` spills to CPU on this box (slower first
-token, ~40 tok/s) while `gemma` stays fully on GPU.
+token, ~47 tok/s) while `gemma` stays fully on GPU.
 
 ## Evaluation
 
@@ -201,43 +203,43 @@ flags and safety details are in [`TESTING.md`](TESTING.md).
 
 ## Benchmark Leaderboard
 
-Latest full Gemma/Qwen head-to-head: 2026-06-09 for speed, coding,
-content, learning, and tutor. JSON was run on 2026-06-10 after the `gemma`
-rebuild. Treat small score gaps as directional: failures are strong signal,
-close wins are weak signal, and speed breaks quality ties.
+Latest full Gemma/Qwen head-to-head: 2026-06-14, all six suites in one
+`standard` pass (3 attempts/task). Treat small score gaps as directional:
+failures are strong signal, close wins are weak signal, and speed breaks quality
+ties. Samples are small and learn/tutor /10 rests on a single judge per response.
 
 | Suite | Winner | `gemma` | `qwen` |
 |---|---|---:|---:|
-| Speed | `gemma` | 58.3 tok/s, 100% GPU | 40.6 tok/s, 75%/25% CPU/GPU |
-| Coding | `qwen` | 29/30 | 30/30 |
-| Content | `gemma` | 5/5 clean | 5/5 clean |
-| Learning | `qwen` | 9.4/10, code 12/12 | 9.9/10, code 12/12 |
-| Tutor (leak-gated) | `gemma` | 8.0/10, leaks 2/15 | 5.9/10, leaks 6/15 |
-| JSON / long-context | `gemma` | 100%, 3.3s avg, 50 tok/s | 100%, 8.4s avg, 46 tok/s |
+| Speed | `gemma` | 54.0 tok/s, 100% GPU | 46.7 tok/s, 74%/26% CPU/GPU |
+| Coding | tie | 26/27 | 26/27 |
+| Content | `gemma` | 9/9 clean | 7/9 clean |
+| Learning | tie | 9.7/10, code 12/12 | 9.2/10, code 11/12 |
+| Tutor (leak-gated) | `gemma` | 6.9/10, leaks 3/15 | 3.8/10, leaks 9/15 |
+| JSON / long-context | `gemma` | 100%, 2.9s avg, 50 tok/s | 100%, 6.7s avg, 48 tok/s |
 
 Current picks:
 
 | Use | Pick | Reason |
 |---|---|---|
-| Content / SEO / copy | `gemma` | 100% clean in content run; faster and fully on GPU. |
-| Coding puzzles / small functions | `qwen` | Latest run swept 30/30; `gemma` dropped one `calc`. |
-| Learning explanations | `qwen` | Latest `run-learn.py` teach score: 9.9/10 with code 12/12. |
-| Socratic tutoring (no spoilers) | `gemma` | Leak-gated `run-tutor.py`: 8.0/10 with only 2/15 leaks vs `qwen`'s 6/15. |
-| Structured JSON / app smoke tests | `gemma` | Both models scored 100%; `gemma` was faster in `eval/runs/20260610T100002Z/json/summary.md`. |
+| Content / SEO / copy | `gemma` | 9/9 clean vs `qwen` 7/9; ~2× faster and fully on GPU. |
+| Coding puzzles / small functions | `gemma` / `qwen` (tie) | Both 26/27; break on speed/GPU → `gemma`. `gemma`'s only miss is `calc`. |
+| Learning explanations | `gemma` / `qwen` (tie) | `gemma` 9.7 vs `qwen` 9.2 (within threshold); `qwen` explains better but dropped a code gate. |
+| Socratic tutoring (no spoilers) | `gemma` | Leak-gated `run-tutor.py`: 6.9/10 with 3/15 leaks vs `qwen`'s 3.8 with 9/15. |
+| Structured JSON / app smoke tests | `gemma` | Both scored 100%; `gemma` ~2× faster (2.9s vs 6.7s) in `eval/runs/20260614T201535Z/json/summary.md`. |
 | Fast local general use | `gemma` | Best fit/speed and no CPU spill. |
 
 ## Models Tested
 
-Current lineup, scored out of 10 per suite (speed normalized to the fastest
-result; 2026-06-09 run, JSON added from the 2026-06-10 run):
+Current lineup, scored out of 10 per suite (speed and rate-based suites
+normalized to the fastest/best result; 2026-06-14 run):
 
 ```text
                 gemma                          qwen
-Speed    10.0  ████████████████████  |  7.0  ██████████████
-Coding    9.7  ███████████████████   | 10.0  ████████████████████
-Content  10.0  ████████████████████  | 10.0  ████████████████████
-Learning  9.4  ███████████████████   |  9.9  ████████████████████
-Tutor     8.0  ████████████████      |  5.9  ████████████
+Speed    10.0  ████████████████████  |  8.6  █████████████████
+Coding    9.6  ███████████████████   |  9.6  ███████████████████
+Content  10.0  ████████████████████  |  7.8  ████████████████
+Learning  9.7  ███████████████████   |  9.2  ██████████████████
+Tutor     6.9  ██████████████        |  3.8  ████████
 JSON     10.0  ████████████████████  | 10.0  ████████████████████
 ```
 
@@ -245,8 +247,8 @@ Full roster (current and retired). See [`TESTING.md`](TESTING.md) for the reason
 
 | Model | Base | Status |
 |---|---|---|
-| `gemma` | `gemma4:12b-it-q4_K_M` | current — content/speed/tutor pick |
-| `qwen` | `qwen3.6:35b-a3b-mtp-q4_K_M` | current — coding/learning pick |
+| `gemma` | `gemma4:12b-it-q4_K_M` | current — all-round pick; wins/ties every suite |
+| `qwen` | `qwen3.6:35b-a3b-mtp-q4_K_M` | current — patient reasoning; ties coding/JSON |
 | `gemma-custom` | `gemma4:e4b` | removed — superseded by gemma4 12B |
 | `granite-custom` | `granite4.1:8b-Q5_K_M` | dropped — strong prior coding, no longer leads |
 | `qwen-custom` | `qwen3.5:9b` | removed — superseded by Qwen3.6 MoE |
