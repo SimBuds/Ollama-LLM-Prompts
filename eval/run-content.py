@@ -54,7 +54,8 @@ def run_attempt(model: str, task: ContentTask, n: int, total: int, timeout: int,
         return {"ok": False, "error": str(e), "elapsed_s": time.monotonic() - t0}
     elapsed = time.monotonic() - t0
     s = task.evaluate(text)
-    print(f"{'ok ' if s['clean'] else 'OK*'}  {elapsed:5.1f}s  "
+    tag = "clean" if s["clean"] else "DIRTY"
+    print(f"{tag:<6} {elapsed:5.1f}s  "
           f"{tok_per_s(meta):5.1f} tok/s  {s['words']:4d} words  [{s['flags']}]")
     return {"ok": True, "task": task.key, "clean": s["clean"],
             "words": s["words"], "elapsed_s": elapsed,

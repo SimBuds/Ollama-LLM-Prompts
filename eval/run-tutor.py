@@ -6,9 +6,13 @@ a leak and scores 0. Valid responses are graded by a leave-one-out judge panel
 on scaffolding, concept, calibration, pitfalls, and clarity.
 
 Usage:
-  ./eval/run-tutor.py
-  ./eval/run-tutor.py --models gemma --judges gemma
-  ./eval/run-tutor.py --tasks two_sum --attempts 1
+  ./eval/run-tutor.py --models gemma qwen                 # panel = both, leave-one-out
+  ./eval/run-tutor.py --models gemma --judges qwen        # grade gemma with qwen
+  ./eval/run-tutor.py --models gemma qwen --tasks two_sum --attempts 1
+
+Leave-one-out means a response is graded only by judges other than its author, so
+every model under test needs at least one judge with a different name. A single
+model with the default panel has no eligible judge and is refused up front.
 
 Output:
   eval/runs/<UTC>/tutor/
@@ -103,6 +107,16 @@ def main() -> int:
         return 1
 
     judges = args.judges or list(args.models)
+    # Leave-one-out grades each response only with judges other than its author.
+    # If any model under test has no judge of a different name, its explanation
+    # scores collapse to 0 silently — refuse rather than emit a misleading 0.0.
+    unjudgeable = [m for m in args.models
+                   if not any(resolve_model(j)[0] != resolve_model(m)[0] for j in judges)]
+    if unjudgeable:
+        print(f"no eligible judge for {unjudgeable}: leave-one-out needs a judge "
+              f"model different from each model under test (judges={judges}). "
+              f"Pass --judges with a different model.", file=sys.stderr)
+        return 1
 
     run_dir = new_run_dir(args.out_root) / "tutor"
     run_dir.mkdir(parents=True)
