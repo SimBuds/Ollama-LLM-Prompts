@@ -2,6 +2,7 @@
 .vscode
 
 eval/__pycache__/
-runs/
+eval/runs/
+
+# Regenerable build artifacts (system.txt + Modelfile), produced by build-*.
 models/
-personal/

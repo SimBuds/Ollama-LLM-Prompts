@@ -33,8 +33,9 @@ def resolve_model(spec: str) -> tuple[str, bool]:
     A trailing `:think` selects thinking mode while keeping the real Ollama
     model name intact, so a model and its `:think` variant can be ranked as
     separate entries. Thinking is a runtime flag, not a Modelfile setting. The
-    current lineup (gemma) doesn't support it and errors on `--think`,
-    so don't tag them — the hook stays for re-evaluating thinking-capable bases.
+    current bases (gemma4, qwen3.6) both support it; runners default it off for
+    deterministic, faster scoring, so tag a spec `:think` only when you want the
+    thinking variant ranked separately.
     """
     if spec.endswith(":think"):
         return spec[: -len(":think")], True
