@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _ollama import (  # noqa: E402
     REPO_ROOT, ci_str, close_call_note, extract_code, generate,
     get_effective_think, new_run_dir, resolve_model, run_program, sample_caveat,
-    spread_note, tok_per_s,
+    sandbox_note, spread_note, tok_per_s,
 )
 from _judge import judge_scores, reliability_lines  # noqa: E402
 from tutor_tasks import TASKS, TutorTask  # noqa: E402
@@ -124,7 +124,8 @@ def main() -> int:
     print(f"Tasks:   {', '.join(t.name for t in tasks)}  ({len(tasks)} × {args.attempts}/model)")
     print(f"Models:  {', '.join(args.models)}")
     print(f"Judges:  {', '.join(judges)}  (leave-one-out: no model grades itself)")
-    print(f"Rubric:  {args.judge_rubric}\n")
+    print(f"Rubric:  {args.judge_rubric}")
+    print(f"{sandbox_note()}\n")
 
     records: list[dict] = []
     for model in args.models:

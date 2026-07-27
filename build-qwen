@@ -2,16 +2,17 @@
 set -euo pipefail
 
 MODEL_NAME="qwen"
-BASE_MODEL="qwen3.6:35b-a3b-mtp-q4_K_M"
+BASE_MODEL="hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M"
 
 # Modelfile extras (TEMPLATE/RENDERER/PARSER).
 EXTRAS=()
 
 # Context: 262144 - 131072 - 65536 - 32768 - 16384 - 8192 - 4096
 
-# Coding Paramas
+# Shared baseline params — deliberately IDENTICAL to build-gemma. See the note
+# there: differing samplers across builders confound the head-to-head.
 PARAMS=(
-  'num_ctx 16384'
+  'num_ctx 32768'         # 32k: sweet spot for multi-file local tasks; matches run-json.py's pin
   'temperature 0.2'       # Low temperature forces strict compliance with code syntax and tool tags
   'top_p 0.95'
   'top_k 40'

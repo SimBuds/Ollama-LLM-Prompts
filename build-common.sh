@@ -9,6 +9,19 @@
 # ============================================================================
 
 AI_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Preflight: fail loudly if the base model isn't pulled. Without this the script
+# assembles the whole prompt, writes system.txt/Modelfile, and only dies at
+# `ollama create` — leaving stale artifacts that look like a successful build.
+if ! ollama list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qxF "$BASE_MODEL"; then
+  echo "ERROR: base model '$BASE_MODEL' is not pulled." >&2
+  echo "  Pull it:      ollama pull $BASE_MODEL" >&2
+  echo "  Or retarget:  edit BASE_MODEL in $(basename "$0")" >&2
+  echo "  Installed:" >&2
+  ollama list 2>/dev/null | awk 'NR>1 {print "    " $1}' >&2
+  exit 1
+fi
+
 OUT_DIR="$AI_ROOT/models/$MODEL_NAME"
 SYSTEM_FILE="$OUT_DIR/system.txt"
 MODELFILE="$OUT_DIR/Modelfile"

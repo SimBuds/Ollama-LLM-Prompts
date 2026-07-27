@@ -2,22 +2,25 @@
 set -euo pipefail
 
 MODEL_NAME="gemma"
-BASE_MODEL="gemma4:12b-it-q4_K_M"
+BASE_MODEL="gemma4:26b-a4b-it-qat"
 
 # Modelfile extras (TEMPLATE/RENDERER/PARSER).
 EXTRAS=()
 
 # Context: 262144 - 131072 - 65536 - 32768 - 16384 - 8192 - 4096
 
-# Content Params
+# Shared baseline params — deliberately IDENTICAL to build-qwen. The suites
+# (except run-json.py) send no sampler options, so they inherit these; differing
+# values here confound the leaderboard with model quality. Keep them in sync and
+# let a runner override per-suite when a suite needs different decoding.
 PARAMS=(
-  'num_ctx 16384'
-  'temperature 0.75'
-  'top_p 0.9'
+  'num_ctx 32768'         # 32k: sweet spot for multi-file local tasks; matches run-json.py's pin
+  'temperature 0.2'       # Low temperature forces strict compliance with code syntax and tool tags
+  'top_p 0.95'
   'top_k 40'
-  'repeat_penalty 1.08'
-  'presence_penalty 0.2'
-  'frequency_penalty 0.1'  
+  'min_p 0.05'            # Safeguards structural format without restricting code vocabulary
+  'presence_penalty 0.0'  # MUST BE ZERO. Coding requires reusing exact variable names.
+  'repeat_penalty 1.05'   # Prevents infinite code loops without breaking boilerplate code
 )
 
 # Shared assembly — see build-common.sh.

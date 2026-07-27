@@ -21,12 +21,33 @@ usable local default.
 
 ## Safety
 
-`run-code.py`, `run-learn.py`, and `run-tutor.py` execute model-generated Python
-in a subprocess with a fresh temp working directory and wall-clock timeout. They
-are **not containerized**. Run trusted local models only.
+`run-code.py`, `run-learn.py`, and `run-tutor.py` execute model-generated Python.
+Since 2026-07-27 that execution is confined by **bubblewrap** when `bwrap` is
+available on the box:
 
-Do not point the execution runners at newly-pulled community models without
-reviewing the risk.
+| Confinement | Effect |
+|---|---|
+| `--ro-bind /usr` + mirrored `/lib`,`/bin` | read-only system; nothing writable outside the CWD |
+| `--unshare-all` | no network, no host PID/IPC/UTS namespace |
+| `--bind <tmpdir>` + `--chdir` | writable only in the throwaway working directory |
+| no `$HOME` bind | `~/.ssh`, `.env` files, and the rest of your home are unreachable |
+| `--new-session`, `--die-with-parent` | no terminal injection back into the runner; no survivors |
+
+Each runner prints its active mode at startup, e.g.
+`Sandbox: bwrap (read-only /usr, no network, no $HOME, writable CWD only)`.
+
+**The fallback is not isolation.** If `bwrap` is missing, or present but unable to
+set up its namespaces (unprivileged user namespaces disabled, say),
+`run_program()` degrades to a bare subprocess with only a wall-clock timeout and a
+fresh CWD — model code then runs with your user's full access. That case is
+detected by probe, never assumed, and the startup banner says `Sandbox: NONE`.
+Read the banner before running an untrusted model; do not infer isolation from the
+presence of this section.
+
+Verified behavior under the sandbox: normal programs pass, `$HOME` reads raise
+`FileNotFoundError`, outbound sockets raise `Network is unreachable`, CWD writes
+succeed, and the `wrong-answer` / `syntax` / `timeout` failure classifications are
+all preserved.
 
 ## Runner Matrix
 
@@ -136,6 +157,29 @@ Add tasks in:
 | Schema/long-context extraction | `eval/json_tasks.py` |
 
 ## Current Benchmark Snapshot
+
+> **⚠ INVALIDATED 2026-07-27 — retired bases and a sampler confound.**
+>
+> Two independent reasons nothing below describes the current lineup:
+>
+> 1. **Both bases are gone.** `gemma` is now `gemma4:26b-a4b-it-qat` and `qwen` is
+>    now `hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M`.
+>    Neither base measured below is installed.
+> 2. **The comparison was confounded.** Only `run-json.py` sends sampler options;
+>    every other suite inherits the Modelfile `PARAMS`. On 2026-06-14 those
+>    differed — `gemma` at `temperature 0.75` / `presence_penalty 0.2` /
+>    `frequency_penalty 0.1` vs `qwen` at `temperature 0.2` / `presence_penalty
+>    0.0` / `min_p 0.05`. So the speed, coding, content, learning, and tutor
+>    tables measure model × sampler, not model. Both builders now carry identical
+>    `PARAMS`, which removes the confound going forward.
+>
+> One consequence worth retesting rather than assuming: `gemma`'s repeatable
+> `calc` miss was attributed to an operator-precedence weakness, but it ran with
+> `presence_penalty 0.2` — against this repo's own rule that presence penalty
+> must be zero because code reuses exact variable names. That failure may be a
+> sampler artifact, not a capability limit.
+>
+> Retained below as decision history. Rerun `standard` before trusting any pick.
 
 Latest full head-to-head: `gemma` (`gemma4:12b-it-q4_K_M`) vs `qwen`
 (`qwen3.6:35b-a3b-mtp-q4_K_M`) on 2026-06-14, a full `standard` pass across all
@@ -250,6 +294,10 @@ expanded 7-task set. Tied on quality, Gemma wins end-to-end latency (2.9s vs
 
 ## Current Picks
 
+> **⚠ All rows below rest on the retired, sampler-confounded 2026-06-14 run.**
+> There is no defensible pick for any use until `standard` is rerun on the current
+> bases. Treat this table as history, not guidance.
+
 | Use | Pick | Basis |
 |---|---|---|
 | Fast local default | `gemma` | 54 tok/s, 100% GPU; ~10× Qwen's prompt-ingest speed. |
@@ -278,8 +326,10 @@ less punishing because only a subset of parameters is active per token.
 
 | Model | Status | Notes |
 |---|---|---|
-| `gemma` (`gemma4:12b-it-q4_K_M`) | current | Wins or ties all six suites on 2026-06-14; fully on GPU, best content compliance, lowest latency. |
-| `qwen` (`qwen3.6:35b-a3b-mtp-q4_K_M`) | current | Ties coding/JSON and explains well, but regressed on content and leaks 60% in leak-gated tutoring; heavy CPU spill. |
+| `gemma` (`gemma4:26b-a4b-it-qat`) | current | Rebuilt 2026-07-27. 26B A4B MoE, QAT, 15 GB. **No benchmark data.** |
+| `qwen` (`hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M`) | current | Rebuilt 2026-07-27. 35B A3B MoE, 22 GB. **No benchmark data.** Uncensored tune, so it works against `prompts/safety.md` by construction; expect a worse leak rate on `run-tutor.py` and treat the exec-runner risk note above as live. |
+| `gemma` (`gemma4:12b-it-q4_K_M`) | retired 2026-07-27 | Base no longer installed. Won/tied all six suites on 2026-06-14, but that run was sampler-confounded. |
+| `qwen` (`qwen3.6:35b-a3b-mtp-q4_K_M`) | retired 2026-07-27 | Base no longer installed. Tied coding/JSON; leaked 60% in leak-gated tutoring. |
 | `granite` (`granite4.1:8b-Q5_K_M`) | dropped | Strong prior coding runs, but no longer leads the current lineup. |
 | `qwen-custom` (`qwen3.5:9b`) | removed | Fast 9B-era thinking model; superseded by current Qwen3.6 MoE results. |
 | `ministral-custom` | removed | Strong historical #2; removed after Gemma/Granite consolidation. |
@@ -291,6 +341,48 @@ less punishing because only a subset of parameters is active per token.
 
 The notes below are retained for decision history. Prefer the current snapshot
 above when choosing a model today.
+
+### Lineup rebuild and confound fix (2026-07-27)
+
+An audit found the repo non-functional: both documented bases had been removed
+from Ollama, so `build-gemma` and `build-qwen` failed at `ollama create` and every
+runner would `GEN-FAIL` on every attempt. `models/*/system.txt` still carried
+`Built: 2026-06-14`, which made a broken state look like a good build.
+
+Changes:
+
+- `gemma` retargeted to `gemma4:26b-a4b-it-qat`; `qwen` to
+  `hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M`. Both are
+  MoE, so neither fitting in 10 GB of VRAM is tolerable.
+- **`PARAMS` made identical across both builders**, removing the sampler confound
+  described in the snapshot warning. Both now run `num_ctx 32768`, `temperature
+  0.2`, `top_p 0.95`, `top_k 40`, `min_p 0.05`, `presence_penalty 0.0`,
+  `repeat_penalty 1.05`.
+- `num_ctx` raised 16384 → 32768, resolving a drift where the docs claimed 32K
+  while the builders shipped 16K and `run-json.py` pinned 32768 per call.
+- `build-common.sh` gained a base-model preflight: builders now abort with the
+  installed-model list if `BASE_MODEL` is not pulled, instead of writing a
+  half-complete `system.txt` and dying later.
+
+- `run_program()` in `eval/_ollama.py` now confines model-generated Python with
+  bubblewrap (see **Safety**), closing the un-sandboxed-execution caveat that had
+  stood since the exec runners were written. Prompted by the new `qwen` being a
+  newly-pulled community tune.
+
+A `smoke` pass on the new lineup came back clean — 4/4 coding, 2/2 content,
+2/2 JSON, both models — confirming the harness works end to end against both
+rebuilt tags. Speed is the one regression worth noting: generation dropped to
+~31.5 tok/s for both models (the retired `gemma` ran 54 tok/s fully on GPU),
+because neither new base fits in 10 GB of VRAM. `gemma` keeps a ~4× prompt-ingest
+edge (6449 vs 1633 tok/s), which is the number that matters for agentic tools.
+
+Open items from the same audit, in priority order: no suite tests the prompt stack
+itself (identity, `Unverified:` prefixing, and the `memory/user.md` honesty rules
+are all unenforced); the judge panel still has only two models, so leave-one-out
+leaves a single judge and inter-judge disagreement stays `n/a`; no runner accepts
+`--seed`, so nothing is reproducible; results are Markdown-only with `eval/runs/`
+gitignored, so there is no machine-readable history and the leaderboards are
+hand-maintained (which is how the drift above went unnoticed).
 
 ### Archived model-selection decision (2026-05-31)
 

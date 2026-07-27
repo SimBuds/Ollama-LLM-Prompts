@@ -20,16 +20,27 @@ lives in [`TESTING.md`](TESTING.md).
 
 ## Models
 
-Current lineup:
+Current lineup (rebuilt 2026-07-27):
 
 | Model | Base | ctx | Role |
 |---|---|---:|---|
-| `gemma` | `gemma4:12b-it-q4_K_M` | 32K Context | Fast all-rounder; wins or ties every suite, fully on GPU. |
-| `qwen` | `qwen3.6:35b-a3b-mtp-q4_K_M` | 32K Context | Patient reasoning model; ties coding/JSON, strong raw explanations. |
+| `gemma` | `gemma4:26b-a4b-it-qat` | 32K | 26B A4B MoE, QAT. Unbenchmarked on this base. |
+| `qwen` | `hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M` | 32K | 35B A3B MoE, uncensored community tune. Unbenchmarked on this base. |
 
-`qwen` is a
-35B MoE/MTP model: it spills heavily to CPU, but still clears the local usability
-floor and stays competitive on the reasoning-heavy benchmarks.
+Both are MoE: few active parameters per token, so CPU spillover stays usable on a
+10 GB card even though neither fits fully in VRAM.
+
+> **⚠ No current benchmark data.** Both bases changed on 2026-07-27 and the
+> previous lineup (`gemma4:12b-it-q4_K_M`, `qwen3.6:35b-a3b-mtp-q4_K_M`) is no
+> longer installed. **Every score in this file was measured against those retired
+> bases and does not describe the models you have.** Roles above are
+> architectural facts, not measured results. Run
+> `./eval/run-profile.py standard --models gemma qwen` before trusting any pick.
+>
+> Two extra caveats on the new `qwen`: it is an *uncensored* tune, so it works
+> against [`prompts/safety.md`](prompts/safety.md) by construction, and it is a
+> newly-pulled community model that the execution runners run un-sandboxed —
+> see the safety note in [`TESTING.md`](TESTING.md).
 
 ## Quickstart
 
@@ -67,7 +78,7 @@ The only model-specific part of a builder is the top config block:
 
 ```bash
 MODEL_NAME="qwen"
-BASE_MODEL="qwen3.6:35b-a3b-mtp-q4_K_M"
+BASE_MODEL="hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M"
 EXTRAS=()
 PARAMS=( # Context: 262144 - 131072 - 65536 - 32768 - 16384 - 8192 - 4096
   'num_ctx 32768'         # 32k: The sweet spot for multi-file local tasks
@@ -83,7 +94,17 @@ PARAMS=( # Context: 262144 - 131072 - 65536 - 32768 - 16384 - 8192 - 4096
 
 For a new model, copy an existing `build-*` script and edit only that config
 block. The shared assembly section below the divider is mirrored across builders
-and should stay byte-identical.
+and should stay byte-identical. Builders abort up front if `BASE_MODEL` is not
+pulled, so a stale or retargeted base fails loudly instead of leaving a
+half-written `system.txt` behind.
+
+**Keep `PARAMS` identical across builders.** Only `run-json.py` sends sampler
+options; every other suite inherits whatever the Modelfile sets. Differing values
+across builders mean the leaderboard measures model × sampler instead of model —
+that mistake invalidated the 2026-06-14 coding, learning, and tutor tables, which
+compared `gemma` at `temperature 0.75` / `presence_penalty 0.2` against `qwen` at
+`0.2` / `0.0`. If a model needs its own decoding for daily use, make that a
+separate tag rather than skewing the shared baseline.
 
 Where changes belong:
 
@@ -152,22 +173,24 @@ models:
     roles: [chat, edit, apply]
 ```
 
-`gemma` is the fast default for content, JSON, and tutoring and now ties `qwen`
-on coding; pick `qwen` when you want its patient reasoning style. Continue
-auto-discovers Ollama, but listing the custom names keeps the prompt-stacked
-builds (not the raw bases) in the model picker.
+Which one to default to is currently an open question — the previous
+recommendation rested on the retired bases. `gemma` is the smaller of the two
+(15 GB vs 22 GB), so it is the reasonable interim default on load time alone until
+a `standard` pass says otherwise. Continue auto-discovers Ollama, but listing the
+custom names keeps the prompt-stacked builds (not the raw bases) in the model
+picker.
 
 ### Cline
 
 In Cline's settings, set **API Provider** to `Ollama`, **Base URL** to
 `http://localhost:11434`, and **Model** to `qwen` or `gemma`. Cline is
-agentic/coding-heavy; the two now tie on coding, so `gemma` is the better default
-for its ~10× faster prompt ingestion and full-GPU speed, with `qwen` as the
-patient-reasoning alternative.
+agentic/coding-heavy and ingests large prompts, so prompt-eval throughput matters
+more here than generation speed — `run-speed.py` reports both, and that column
+should drive the choice once the current bases are measured.
 
 Notes for both: keep `OLLAMA_KEEP_ALIVE` long enough to avoid reload churn when
-switching models, and remember `qwen` spills to CPU on this box (slower first
-token, ~47 tok/s) while `gemma` stays fully on GPU.
+switching models. Neither current base fits entirely in 10 GB of VRAM, so expect
+CPU spill on both; both are MoE, which is what keeps that spill usable.
 
 ## Evaluation
 
@@ -203,6 +226,13 @@ flags and safety details are in [`TESTING.md`](TESTING.md).
 
 ## Benchmark Leaderboard
 
+> **⚠ RETIRED BASES — does not describe the current lineup.** Everything in this
+> section was measured on 2026-06-14 against `gemma4:12b-it-q4_K_M` and
+> `qwen3.6:35b-a3b-mtp-q4_K_M`, neither of which is installed. It is also
+> sampler-confounded (see *Build And Tune*): the two models ran at different
+> temperatures, so the coding, learning, and tutor tables do not isolate model
+> quality. Kept for decision history only. Rerun before picking anything.
+
 Latest full Gemma/Qwen head-to-head: 2026-06-14, all six suites in one
 `standard` pass (3 attempts/task). Treat small score gaps as directional:
 failures are strong signal, close wins are weak signal, and speed breaks quality
@@ -217,7 +247,8 @@ ties. Samples are small and learn/tutor /10 rests on a single judge per response
 | Tutor (leak-gated) | `gemma` | 6.9/10, leaks 3/15 | 3.8/10, leaks 9/15 |
 | JSON / long-context | `gemma` | 100%, 2.9s avg, 50 tok/s | 100%, 6.7s avg, 48 tok/s |
 
-Current picks:
+Current picks (⚠ all from the retired bases above — not valid for the current
+lineup):
 
 | Use | Pick | Reason |
 |---|---|---|
@@ -230,11 +261,12 @@ Current picks:
 
 ## Models Tested
 
-Current lineup, scored out of 10 per suite (speed and rate-based suites
-normalized to the fastest/best result; 2026-06-14 run):
+Per-suite /10 for the **retired** 2026-06-14 bases (speed and rate-based suites
+normalized to the best result). Retained as history; the current bases have no
+scores yet:
 
 ```text
-                gemma                          qwen
+          gemma4:12b-it-q4_K_M          qwen3.6:35b-a3b-mtp
 Speed    10.0  ████████████████████  |  8.6  █████████████████
 Coding    9.6  ███████████████████   |  9.6  ███████████████████
 Content  10.0  ████████████████████  |  7.8  ████████████████
@@ -247,8 +279,10 @@ Full roster (current and retired). See [`TESTING.md`](TESTING.md) for the reason
 
 | Model | Base | Status |
 |---|---|---|
-| `gemma` | `gemma4:12b-it-q4_K_M` | current — all-round pick; wins/ties every suite |
-| `qwen` | `qwen3.6:35b-a3b-mtp-q4_K_M` | current — patient reasoning; ties coding/JSON |
+| `gemma` | `gemma4:26b-a4b-it-qat` | current — rebuilt 2026-07-27, **unbenchmarked** |
+| `qwen` | `hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M` | current — rebuilt 2026-07-27, **unbenchmarked**; uncensored community tune |
+| `gemma` (prior) | `gemma4:12b-it-q4_K_M` | retired 2026-07-27 — base no longer installed; source of the 2026-06-14 scores |
+| `qwen` (prior) | `qwen3.6:35b-a3b-mtp-q4_K_M` | retired 2026-07-27 — base no longer installed; source of the 2026-06-14 scores |
 | `gemma-custom` | `gemma4:e4b` | removed — superseded by gemma4 12B |
 | `granite-custom` | `granite4.1:8b-Q5_K_M` | dropped — strong prior coding, no longer leads |
 | `qwen-custom` | `qwen3.5:9b` | removed — superseded by Qwen3.6 MoE |
@@ -264,6 +298,5 @@ spillover can remain usable because fewer parameters are active per token.
 
 ## Docs
 
-- [`AGENTS.md`](AGENTS.md): workflow contract for coding agents.
 - [`TESTING.md`](TESTING.md): testing source of truth, runner docs, safety notes,
   benchmark history, and detailed results.

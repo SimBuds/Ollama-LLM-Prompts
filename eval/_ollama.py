@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -132,19 +134,105 @@ def extract_code(text: str, prefer_lang: str = "python") -> str:
     return clean_text
 
 
+# --- sandboxing ---------------------------------------------------------------
+# run-code/run-learn/run-tutor execute model-generated Python. Where bubblewrap is
+# available we confine it: read-only /usr, no network, no host PID/IPC namespace,
+# no access to $HOME, and write access only to the throwaway CWD. Without bwrap we
+# fall back to a bare subprocess — the historical behavior, which has a timeout and
+# a fresh CWD but nothing stopping the code reading ~/.ssh or phoning home. The
+# fallback is reported by sandbox_note() rather than assumed, because "we ran it
+# unsandboxed" must never be silent.
+
+BWRAP = shutil.which("bwrap")
+_SANDBOX_OK: bool | None = None
+
+
+def _bwrap_argv(workdir: str) -> list[str]:
+    """bwrap prefix confining a program to `workdir`."""
+    argv = [
+        BWRAP,
+        "--ro-bind", "/usr", "/usr",
+        "--proc", "/proc",
+        "--dev", "/dev",
+        "--tmpfs", "/tmp",          # before the bind below, so the bind lands inside it
+        "--bind", workdir, workdir,
+        "--chdir", workdir,
+        "--unshare-all",            # no network, no host PID/IPC/UTS
+        "--new-session",            # no terminal injection back into the runner
+        "--die-with-parent",
+    ]
+    # Mirror the host's top-level layout: merged-/usr systems (Arch) have these as
+    # symlinks into /usr; split layouts need real read-only binds.
+    for top in ("/lib", "/lib64", "/bin", "/sbin"):
+        p = Path(top)
+        if p.is_symlink():
+            argv += ["--symlink", os.readlink(top), top]
+        elif p.is_dir():
+            argv += ["--ro-bind", top, top]
+    # A venv/uv interpreter lives outside /usr and needs its own bind.
+    base = sys.base_prefix
+    if not base.startswith("/usr"):
+        argv += ["--ro-bind", base, base]
+    for extra in ("/etc/ld.so.cache", "/etc/ld.so.conf"):
+        if Path(extra).exists():
+            argv += ["--ro-bind", extra, extra]
+    return argv
+
+
+def _sandbox_works() -> bool:
+    """Probe bwrap once with a trivial program, caching the result.
+
+    Necessary because a bwrap that cannot set up its namespaces (unprivileged
+    userns disabled, for instance) exits nonzero — which would otherwise be
+    misread as every model's code failing.
+    """
+    global _SANDBOX_OK
+    if _SANDBOX_OK is not None:
+        return _SANDBOX_OK
+    _SANDBOX_OK = False
+    if BWRAP:
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                proc = subprocess.run(
+                    _bwrap_argv(td) + [sys.executable, "-c", "print('ok')"],
+                    cwd=td, capture_output=True, text=True, timeout=30,
+                )
+            _SANDBOX_OK = proc.returncode == 0 and proc.stdout.strip() == "ok"
+        except Exception:  # noqa: BLE001
+            _SANDBOX_OK = False
+    return _SANDBOX_OK
+
+
+def sandbox_note() -> str:
+    """One-line description of how model code will be executed, for run banners."""
+    if _sandbox_works():
+        return "Sandbox: bwrap (read-only /usr, no network, no $HOME, writable CWD only)"
+    if BWRAP:
+        return ("Sandbox: NONE — bwrap found but failed to start; model code runs "
+                "with your user's full access. Trusted models only.")
+    return ("Sandbox: NONE — bwrap not installed; model code runs with your user's "
+            "full access. Trusted models only.")
+
+
 def run_program(source: str, exec_timeout: int) -> tuple[bool, str]:
     """Execute `source` in a throwaway temp dir. Returns (passed, short_reason).
 
-    SAFETY: runs model-generated code in a subprocess with a wall-clock timeout
-    and a fresh CWD, but it is NOT containerized. Only run trusted models/tasks.
+    SAFETY: model-generated code is confined by bubblewrap when it is available
+    (see sandbox_note()) — read-only /usr, no network, no $HOME, writable CWD
+    only. When bwrap is unavailable this degrades to a bare subprocess with just a
+    wall-clock timeout and a fresh CWD, which is NOT isolation: run trusted
+    models/tasks only. Runners print sandbox_note() so the active mode is on the
+    record for every run.
     """
     with tempfile.TemporaryDirectory() as td:
         prog = Path(td) / "sol.py"
         prog.write_text(source, encoding="utf-8")
+        argv = [sys.executable, str(prog)]
+        if _sandbox_works():
+            argv = _bwrap_argv(td) + argv
         try:
             proc = subprocess.run(
-                [sys.executable, str(prog)],
-                cwd=td, capture_output=True, text=True, timeout=exec_timeout,
+                argv, cwd=td, capture_output=True, text=True, timeout=exec_timeout,
             )
         except subprocess.TimeoutExpired:
             return False, "timeout"

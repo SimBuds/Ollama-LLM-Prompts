@@ -9,8 +9,8 @@ This is a real pass@1 measurement, not a regex proxy. The summary ranks models
 by overall pass rate (tie-break: speed) and declares a winner.
 
 Usage:
-  ./eval/run-code.py                         # all models, 3 attempts/task
-  ./eval/run-code.py --attempts 5
+  ./eval/run-code.py --models gemma qwen      # all tasks, 5 attempts/task
+  ./eval/run-code.py --models gemma qwen --attempts 3
   ./eval/run-code.py --models gemma
   ./eval/run-code.py --tasks two_sum lru_cache
   ./eval/run-code.py --exec-timeout 10       # per-program wall clock
@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _ollama import (  # noqa: E402
     REPO_ROOT, ci_str, close_call_note, extract_code, generate,
     get_effective_think, new_run_dir, resolve_model, run_program, sample_caveat,
-    spread_note, tok_per_s,
+    sandbox_note, spread_note, tok_per_s,
 )
 from coding_tasks import TASKS, Task  # noqa: E402
 
@@ -101,6 +101,7 @@ def main() -> int:
     print(f"Run dir: {run_dir.relative_to(REPO_ROOT)}")
     print(f"Tasks:   {', '.join(t.name for t in tasks)}  ({len(tasks)} × {per_task} = {total}/model)")
     print(f"Models:  {', '.join(args.models)}")
+    print(sandbox_note())
     print()
 
     results: dict[str, list[dict]] = {}
