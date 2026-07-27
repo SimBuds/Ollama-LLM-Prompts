@@ -7,7 +7,7 @@ leaderboards.
 
 ## Goals
 
-The suite answers three practical questions:
+The suite answers four practical questions:
 
 1. **Can the model follow content instructions?** Format discipline, SEO keyword
    control, length, and Markdown structure.
@@ -15,6 +15,14 @@ The suite answers three practical questions:
    tasks with hidden asserts.
 3. **Can the model teach without leaking?** Explanation quality, code gate, and
    solution-leak checks for tutor use.
+4. **Does the prompt stack actually hold?** Whether the rules in `prompts/`,
+   `memory/`, and `knowledge/` are obeyed — identity, honesty about Casey's skill
+   buckets, `Unverified:` marking, output shape.
+
+Question 4 is the odd one out and the reason `run-persona.py` exists: suites 1–3
+measure the *base model* through the stack, so a prompt edit that silently breaks
+a rule passes all of them. The stack is what this repo actually builds, so it gets
+its own regression suite.
 
 Speed is tracked separately because a better model that is too slow is not a
 usable local default.
@@ -61,6 +69,7 @@ All runners write to `eval/runs/<UTC>/`.
 | `run-learn.py` | Code + explanation, leave-one-out judge panel | yes | 3 per task | Medium because explanation quality is judge-scored |
 | `run-tutor.py` | Leak-gated tutoring guidance | yes | 3 per task | Medium because leak checks are strong but teaching quality is judge-scored |
 | `run-json.py` | Schema-constrained JSON + long-context fact recall | no | 3 per task | Medium for structured-output reliability at the tested context sizes |
+| `run-persona.py` | Prompt-stack compliance: identity, skill-bucket honesty, `Unverified:`, output shape | no | 5 per task | Medium-high for the rule shapes encoded; regex scorers miss novel phrasings |
 
 Common flags:
 
@@ -68,7 +77,47 @@ Common flags:
 --models NAME
 --attempts TIMES
 --timeout SECONDS
+--seed N
+--out-root PATH
 ```
+
+### Reproducibility (`--seed`)
+
+Every runner accepts `--seed N`. Without it Ollama samples freshly each call and a
+run cannot be replayed; with it the run is repeatable.
+
+The seed is offset per attempt (`seed + attempt`), not reused verbatim. That
+matters: a single fixed seed makes every attempt of a task byte-identical, so an
+"N-attempt pass rate" would be one sample reported as N and the Wilson intervals
+would be fiction. Offsetting keeps the run replayable while preserving the
+between-attempt variance the suites exist to measure. Judge calls in
+`run-learn.py` / `run-tutor.py` are seeded too — grading is part of the result.
+
+> **⚠ `--seed` does not currently give run-to-run reproducibility on this box.**
+> Measured 2026-07-27:
+>
+> - **Within one warm process:** reliable. Six consecutive same-seed calls at
+>   `temperature 1.6` produced byte-identical output, stable even when interleaved
+>   with a different seed.
+> - **Across separate runs:** not reliable. Re-running one persona task with the
+>   identical `--seed 1000` produced **different text on 4 of 5 attempts**, and the
+>   clean rate moved 5/5 → 4/5 purely from that variance.
+>
+> So the flag pins sampling inside a session but does not survive a process
+> restart and model reload. `OLLAMA_KV_CACHE_TYPE=q4_0`, flash attention, and MoE
+> routing under partial CPU offload are the plausible causes — offload decisions
+> can differ between loads, which changes the numerics before sampling ever
+> happens. Until that is run down, treat a seeded run as documented rather than
+> replayable, and **do not attribute a small score change between runs to a code
+> or prompt edit** without re-running both sides.
+>
+> Practical consequence: when comparing scorer or prompt changes, re-score the
+> saved responses under `eval/runs/<UTC>/<suite>/<model>/` rather than re-running
+> the models. That isolates the change from model variance.
+
+`--out-root PATH` writes results outside the repo. This previously crashed every
+runner (`Path.relative_to` raises rather than degrading when the target is outside
+the repo); runners now fall back to printing the absolute path.
 
 Runner-specific flags:
 
@@ -80,6 +129,7 @@ Runner-specific flags:
 | `run-learn.py` | `--tasks ...`, `--judges ...`, `--judge-rubric default|strict`, `--exec-timeout SECONDS`, `--thinking auto|on|off` |
 | `run-tutor.py` | `--tasks ...`, `--judges ...`, `--judge-rubric default|strict`, `--exec-timeout SECONDS`, `--thinking auto|on|off` |
 | `run-json.py` | `--tasks ...`, `--num-ctx N` (default 32768), `--context-pressure normal|medium|high`, `--position default|early|middle|late|all`, `--thinking auto|on|off` |
+| `run-persona.py` | `--tasks ...`, `--system-mode stacked|baseline`, `--thinking auto|on|off` (defaults off) |
 
 Thinking mode can be forced with `--thinking on`, disabled with `--thinking off`,
 or selected per model by appending `:think` to the model spec. Do not use
@@ -120,6 +170,7 @@ Confidence by signal:
 | Code pass/fail | Medium-high | Real execution against hidden asserts, scoped to these tasks. |
 | JSON schema + fact checks | Medium | Good structured-output smoke test, but still a small task set. |
 | Content compliance | Medium-high | Useful for the project prompts, not a general writing benchmark. |
+| Prompt-stack compliance | Medium-high | Deterministic and repeatable, but each scorer only catches the violation shapes written into it. Read a clean score as evidence, not proof; read a failure as reliable. |
 | Learning explanation score | Medium | Leave-one-out judging reduces self-bias, but judges are still models. |
 | Tutor score | Medium | Leak failures are strong. Teaching scores are judge-sensitive. |
 
@@ -138,9 +189,13 @@ individual runners so routine testing doesn't drift across hand-typed flags.
 
 | Profile | When to run | Runtime | What it does |
 |---|---|---|---|
-| `smoke` | After every `build-*` rebuild or runner change | ~5-10 min | Speed (capped output) + 2 coding tasks + SEO content + 1 JSON task, 2 attempts each |
-| `standard` | When picking models or after prompt-stack changes | under 1 hour | All six suites; code/content trimmed to 3 attempts so the expanded task set stays in budget |
-| `deep` | Before trusting a close call or promoting a new model | several hours | Full 5-attempt sweeps plus medium and high context-pressure JSON runs |
+| `smoke` | After every `build-*` rebuild or runner change | ~5-10 min | Speed (capped output) + 2 coding tasks + SEO content + 2 persona tasks + 1 JSON task, 2 attempts each |
+| `standard` | When picking models or after prompt-stack changes | ~1-2 hours | All seven suites; code/content/persona trimmed to 3 attempts so the expanded task set stays in budget |
+| `deep` | Before trusting a close call or promoting a new model | several hours | Full 5-attempt sweeps, both persona system modes, plus medium and high context-pressure JSON runs |
+
+Runtime note: the "under 1 hour" `standard` budget was calibrated on models running
+54/46.7 tok/s fully or mostly on GPU. The current lineup runs ~31 tok/s with both
+models spilling to CPU, so budget 1-2 hours.
 
 The wrapper prints every `summary.md` it produced at the end. Individual runners
 remain usable directly for targeted sweeps (single task, context pressure,
@@ -155,6 +210,40 @@ Add tasks in:
 | Code + learning explanation | `eval/learning_tasks.py` |
 | Leak-gated tutoring | `eval/tutor_tasks.py` |
 | Schema/long-context extraction | `eval/json_tasks.py` |
+| Prompt-stack rule | `eval/persona_tasks.py` |
+
+### Measuring what the prompt stack contributes
+
+`run-persona.py --system-mode baseline` reruns the same tasks with a generic
+`"You are a helpful assistant."` in place of the built stack. The delta against a
+`stacked` run is the stack's actual contribution per rule:
+
+- **Both high** — the base model complies unprompted; that rule is spending prompt
+  tokens every turn for nothing and is a candidate for deletion.
+- **Stacked high, baseline low** — the rule is load-bearing. Keep it.
+- **Both low** — the rule is written but not working. Rewrite it or drop it.
+
+That distinction matters here because `README.md` advises removing bad rules
+before adding more instructions, and this is the only way to tell which rules are
+bad. `deep` runs both passes; `standard` runs stacked only.
+
+**Read baseline scores carefully — a clean baseline is not always compliance.**
+Two of the tasks depend on facts that only exist in `memory/user.md`, so stripping
+the stack removes the knowledge, not just the rule:
+
+- `unknown_fact` asks for a figure that isn't on file. Stacked, a clean pass means
+  the model consulted the profile and correctly said so. Baseline, the model has
+  never heard of Casey, so it also says it doesn't know — and scores clean for
+  entirely the wrong reason. **A high baseline here is an artifact, not evidence
+  the rule is redundant.**
+- `familiar_skill` is partly protected: a generic "I have no information about
+  this person" does not match the required Familiar-framing language, so it still
+  registers as a failure.
+
+The tasks that give a genuinely clean read on the stack's contribution are the
+ones whose rules are about *behavior* rather than *facts*: `identity`,
+`model_origin`, `unverified`, `fields_echo`, and `bash_block`. Weight those when
+deciding what to cut.
 
 ## Current Benchmark Snapshot
 
@@ -341,6 +430,56 @@ less punishing because only a subset of parameters is active per token.
 
 The notes below are retained for decision history. Prefer the current snapshot
 above when choosing a model today.
+
+### Prompt-stack baseline and the `Unverified:` experiment (2026-07-27)
+
+First run of `run-persona.py`, 5 attempts × 7 rules × 2 models, stacked vs
+`--system-mode baseline`.
+
+Overall the stack is doing real work: `gemma` 31% → 66%, `qwen` 14% → 80%. Per-rule
+contribution (stacked minus baseline, out of 10 across both models):
+
+| Rule | Contribution | Read |
+|---|---:|---|
+| `identity` | +9 | load-bearing |
+| `model_origin` | +8 | load-bearing |
+| `familiar_skill` | +8 | load-bearing |
+| `unknown_fact` | +5 | load-bearing (all of it from `qwen`) |
+| `fields_echo` | +5 | works on `qwen` (5/5), dead on `gemma` (0/5) |
+| `bash_block` | 0 | already free — both models comply unprompted |
+| `unverified` | 0 | broken — 0/10 stacked *and* unstacked |
+
+The sharpest single result: unstacked, `qwen` answered "what was Casey's
+compensation on the Atelier Dacko contract" with **"$12,000"** plus a fabricated
+legal citation. `memory/user.md` is what prevents that. Note that `gemma`'s clean
+baseline on that task is an artifact — with no profile it has never heard of Casey,
+so it declines for the wrong reason.
+
+#### The `Unverified:` rewrite — a negative result
+
+`prompts/system.md` was rewritten to replace two abstract bullets with a trigger
+list plus a worked example (`OLLAMA_MAX_QUEUE` / `ollama serve --help`). Measured
+against the then-current persona task, the rule went **0/10 → 10/10**.
+
+That number was wrong, and the way it was wrong is worth remembering. The persona
+task happened to ask about the same Ollama queue variable the new example used, so
+it measured whether a model can copy an example, not whether it learned a rule.
+Two follow-up checks:
+
+- Four unrelated exact-fact probes (systemd path, pacman flag, default port, git
+  config key): marker present in only **5/8**.
+- The persona task rewritten to a different subject (git `init.defaultBranch`) and
+  re-run: **0/10 again** — identical to before the rewrite.
+
+So the rewrite buys compliance when the question resembles the example or the model
+is genuinely unsure, and buys nothing when the model is confident and the user
+presses for specifics. In the failing runs `qwen` also invented a
+`GIT_DEFAULT_BRANCH` environment variable — the exact failure the rule exists to
+stop.
+
+Standing lessons: **an eval task must not share its subject with an example in the
+prompt stack**, or the suite grades mimicry; and a large jump on a single task is a
+reason to go looking for contamination, not a reason to celebrate.
 
 ### Lineup rebuild and confound fix (2026-07-27)
 

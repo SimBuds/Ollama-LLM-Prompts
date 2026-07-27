@@ -39,12 +39,14 @@ PROFILES: dict[str, list[list[str]]] = {
         ["run-speed.py", "--num-predict", "128"],
         ["run-code.py", "--tasks", "two_sum", "calc", "--attempts", "2"],
         ["run-content.py", "--tasks", "seo_product", "--attempts", "2"],
+        ["run-persona.py", "--tasks", "identity", "familiar_skill", "--attempts", "2"],
         ["run-json.py", "--tasks", "jd_extract", "--attempts", "2"],
     ],
     "standard": [
         ["run-speed.py"],
         ["run-code.py", "--attempts", "3"],
         ["run-content.py", "--attempts", "3"],
+        ["run-persona.py", "--attempts", "3"],
         ["run-json.py"],
         ["run-learn.py"],
         ["run-tutor.py"],
@@ -53,6 +55,10 @@ PROFILES: dict[str, list[list[str]]] = {
         ["run-speed.py"],
         ["run-code.py", "--attempts", "5"],
         ["run-content.py", "--attempts", "5"],
+        ["run-persona.py", "--attempts", "5"],
+        # Baseline pass: same persona tasks with a generic system prompt, so the
+        # delta against the stacked run above shows what the prompt stack buys.
+        ["run-persona.py", "--attempts", "5", "--system-mode", "baseline"],
         ["run-json.py", "--attempts", "5"],
         ["run-json.py", "--context-pressure", "medium", "--attempts", "2"],
         ["run-json.py", "--context-pressure", "high", "--attempts", "1"],

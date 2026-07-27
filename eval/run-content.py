@@ -31,8 +31,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _ollama import (  # noqa: E402
-    REPO_ROOT, ci_str, close_call_note, generate, get_effective_think,
-    new_run_dir, resolve_model, sample_caveat, spread_note, tok_per_s,
+    REPO_ROOT, add_seed_arg, attempt_seed, ci_str, close_call_note, generate,
+    get_effective_think, new_run_dir, rel_path, resolve_model, sample_caveat,
+    seed_opts, spread_note, tok_per_s,
 )
 from content_tasks import TASKS, ContentTask, seo_task_from_prompt  # noqa: E402
 
@@ -41,14 +42,15 @@ CLOSE_PTS = 0.05  # clean-rate gaps within 5 points are a tie, not a quality win
 
 
 def run_attempt(model: str, task: ContentTask, n: int, total: int, timeout: int,
-                thinking_mode: str) -> dict:
+                thinking_mode: str, seed: int | None = None) -> dict:
     print(f"    {task.key:14s} [{n}/{total}] ", end="", flush=True)
     name, model_think = resolve_model(model)
     think = get_effective_think(thinking_mode, model_think)
 
     t0 = time.monotonic()
     try:
-        text, meta = generate(name, task.prompt, timeout, think=think)
+        text, meta = generate(name, task.prompt, timeout, think=think,
+                              options=seed_opts(attempt_seed(seed, n)))
     except (urllib.error.URLError, TimeoutError) as e:
         print(f"FAIL ({time.monotonic()-t0:.1f}s): {e}")
         return {"ok": False, "error": str(e), "elapsed_s": time.monotonic() - t0}
@@ -77,6 +79,7 @@ def main() -> int:
     ap.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
     ap.add_argument("--keyword", type=str, default=None,
                     help="override the SEO target keyword (ad-hoc mode)")
+    add_seed_arg(ap)
     args = ap.parse_args()
 
     if args.prompt_file is not None:
@@ -95,7 +98,7 @@ def main() -> int:
 
     run_dir = new_run_dir(args.out_root) / "content"
     run_dir.mkdir(parents=True)
-    print(f"Run dir: {run_dir.relative_to(REPO_ROOT)}")
+    print(f"Run dir: {rel_path(run_dir)}")
     print(f"Tasks:   {', '.join(t.key for t in tasks)}  ({args.attempts}/model each)")
     print(f"Models:  {', '.join(args.models)}\n")
 
@@ -107,7 +110,8 @@ def main() -> int:
         rs: list[dict] = []
         for task in tasks:
             for n in range(1, args.attempts + 1):
-                r = run_attempt(model, task, n, args.attempts, args.timeout, args.thinking)
+                r = run_attempt(model, task, n, args.attempts, args.timeout,
+                                args.thinking, args.seed)
                 if r.get("ok"):
                     (mdir / f"{task.key}-attempt-{n}.md").write_text(
                         r["text"], encoding="utf-8")
@@ -190,7 +194,7 @@ def write_summary(run_dir, summary, tasks, attempts) -> None:
             bits.append(caveat)
         L.append(f"- `{r['model']}`: {'; '.join(bits)}")
     (run_dir / "summary.md").write_text("\n".join(L) + "\n", encoding="utf-8")
-    print(f"Summary: {(run_dir / 'summary.md').relative_to(REPO_ROOT)}")
+    print(f"Summary: {rel_path(run_dir / 'summary.md')}")
     if best:
         print(f"Winner:  {best['model']} ({best['clean_rate']*100:.0f}% clean)")
 

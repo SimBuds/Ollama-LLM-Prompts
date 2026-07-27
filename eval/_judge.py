@@ -30,16 +30,20 @@ STRICT_SUFFIX = (
 
 
 def judge_scores(judge_model: str, topic: str, response: str, timeout: int,
-                 template: str, rubric: list[str], strict: bool = False) -> dict:
+                 template: str, rubric: list[str], strict: bool = False,
+                 options: dict | None = None) -> dict:
     """Ask `judge_model` for rubric scores. Returns {dim: 0..2} plus `_parsed`
     (False when the call failed or no JSON came back — those score 0 and are
-    excluded from the panel average, but still counted against parse rate)."""
+    excluded from the panel average, but still counted against parse rate).
+
+    `options` is passed through to the judge's generate call. A run is only
+    reproducible if the grading is seeded too, not just the generation."""
     prompt = template.format(topic=topic, response=response)
     if strict:
         prompt += STRICT_SUFFIX
     jname, jthink = resolve_model(judge_model)
     try:
-        text, _ = generate(jname, prompt, timeout, think=jthink)
+        text, _ = generate(jname, prompt, timeout, think=jthink, options=options)
     except Exception:  # noqa: BLE001
         return {d: 0 for d in rubric} | {"_parsed": False}
     m = JSON_RE.search(text)

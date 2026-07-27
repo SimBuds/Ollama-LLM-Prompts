@@ -51,8 +51,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _ollama import (  # noqa: E402
-    REPO_ROOT, ci_str, close_call_note, generate, get_effective_think,
-    new_run_dir, resolve_model, sample_caveat, spread_note, tok_per_s,
+    REPO_ROOT, add_seed_arg, attempt_seed, ci_str, close_call_note, generate,
+    get_effective_think, new_run_dir, rel_path, resolve_model, sample_caveat,
+    seed_opts, spread_note, tok_per_s,
 )
 from json_tasks import TASKS, JsonTask, build_context  # noqa: E402
 
@@ -161,12 +162,12 @@ def build_prompt(task: JsonTask) -> str:
 
 
 def run_attempt(model: str, task: JsonTask, n: int, total: int, timeout: int,
-                num_ctx: int, thinking_mode: str) -> dict:
+                num_ctx: int, thinking_mode: str, seed: int | None = None) -> dict:
     print(f"    {task.key:14s} [{n}/{total}] ", end="", flush=True)
     name, model_think = resolve_model(model)
     think = get_effective_think(thinking_mode, model_think)
     prompt = build_prompt(task)
-    options = {"num_ctx": num_ctx, "temperature": 0.0}
+    options = seed_opts(attempt_seed(seed, n), {"num_ctx": num_ctx, "temperature": 0.0})
 
     t0 = time.monotonic()
     try:
@@ -231,6 +232,7 @@ def main() -> int:
                     help="single-needle placement: default (task's own), early/middle/late, "
                          "or all (run each as a separate variant). Multi-needle tasks ignore it.")
     ap.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
+    add_seed_arg(ap)
     args = ap.parse_args()
 
     unknown = [t for t in args.tasks if t not in TASKS]
@@ -241,7 +243,7 @@ def main() -> int:
 
     run_dir = new_run_dir(args.out_root) / "json"
     run_dir.mkdir(parents=True)
-    print(f"Run dir:  {run_dir.relative_to(REPO_ROOT)}")
+    print(f"Run dir:  {rel_path(run_dir)}")
     print(f"Tasks:    {', '.join(t.key for t in tasks)}  ({args.attempts}/model each)")
     print(f"Models:   {', '.join(args.models)}")
     print(f"Pressure: {args.context_pressure} (×{PRESSURE[args.context_pressure]}), "
@@ -258,7 +260,7 @@ def main() -> int:
             rs = []
             for n in range(1, args.attempts + 1):
                 r = run_attempt(model, task, n, args.attempts, args.timeout,
-                                args.num_ctx, args.thinking)
+                                args.num_ctx, args.thinking, args.seed)
                 if r.get("ok"):
                     (mdir / f"{task.key}-attempt-{n}.json").write_text(
                         r["text"], encoding="utf-8")
@@ -367,7 +369,7 @@ def write_summary(run_dir, summary, args, tasks) -> None:
         L.append(f"- `{r['model']}`: {'; '.join(bits)}")
 
     (run_dir / "summary.md").write_text("\n".join(L) + "\n", encoding="utf-8")
-    print(f"Summary: {(run_dir / 'summary.md').relative_to(REPO_ROOT)}")
+    print(f"Summary: {rel_path(run_dir / 'summary.md')}")
     if best:
         print(f"Winner:  {best['model']} (score {best['score']*100:.0f}%)")
 

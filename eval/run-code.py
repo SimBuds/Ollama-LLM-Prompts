@@ -34,9 +34,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _ollama import (  # noqa: E402
-    REPO_ROOT, ci_str, close_call_note, extract_code, generate,
-    get_effective_think, new_run_dir, resolve_model, run_program, sample_caveat,
-    sandbox_note, spread_note, tok_per_s,
+    REPO_ROOT, add_seed_arg, attempt_seed, ci_str, close_call_note, extract_code, generate,
+    get_effective_think, new_run_dir, rel_path, resolve_model, run_program,
+    sample_caveat, sandbox_note, seed_opts, spread_note, tok_per_s,
 )
 from coding_tasks import TASKS, Task  # noqa: E402
 
@@ -46,7 +46,8 @@ DEFAULT_OUT_ROOT = REPO_ROOT / "eval" / "runs"
 
 
 def run_attempt(model: str, task: Task, n: int, total: int, timeout: int,
-                exec_timeout: int, thinking_mode: str, out_dir: Path) -> dict:
+                exec_timeout: int, thinking_mode: str, out_dir: Path,
+                seed: int | None = None) -> dict:
     print(f"    [{n}/{total}] {task.name:<18}", end="", flush=True)
     name, model_think = resolve_model(model)
 
@@ -54,7 +55,8 @@ def run_attempt(model: str, task: Task, n: int, total: int, timeout: int,
 
     t0 = time.monotonic()
     try:
-        text, meta = generate(name, task.prompt, timeout, think=think)
+        text, meta = generate(name, task.prompt, timeout, think=think,
+                              options=seed_opts(attempt_seed(seed, n)))
     except Exception as e:  # noqa: BLE001 — surface any transport error as a fail
         print(f"GEN-FAIL ({time.monotonic()-t0:.1f}s): {e}")
         return {"task": task.name, "passed": False, "reason": "gen-fail",
@@ -86,6 +88,7 @@ def main() -> int:
     ap.add_argument("--thinking", choices=["auto", "on", "off"], default="auto",
                     help="Thinking mode: 'auto' respects suffix configuration, 'on' forces thinking tokens, 'off' strips thinking passes.")
     ap.add_argument("--exec-timeout", type=int, default=10, help="per-program timeout (s)")
+    add_seed_arg(ap)
     ap.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
     args = ap.parse_args()
 
@@ -98,7 +101,7 @@ def main() -> int:
     run_dir.mkdir(parents=True)
     per_task = args.attempts
     total = len(tasks) * per_task
-    print(f"Run dir: {run_dir.relative_to(REPO_ROOT)}")
+    print(f"Run dir: {rel_path(run_dir)}")
     print(f"Tasks:   {', '.join(t.name for t in tasks)}  ({len(tasks)} × {per_task} = {total}/model)")
     print(f"Models:  {', '.join(args.models)}")
     print(sandbox_note())
@@ -115,7 +118,8 @@ def main() -> int:
             for n in range(1, per_task + 1):
                 i += 1
                 rs.append(run_attempt(model, task, n, per_task, args.timeout,
-                                      args.exec_timeout, args.thinking, mdir))
+                                      args.exec_timeout, args.thinking, mdir,
+                                      args.seed))
         results[model] = rs
         npass = sum(1 for r in rs if r["passed"])
         print(f"  -> {npass}/{len(rs)} passed\n")
@@ -185,7 +189,7 @@ def write_summary(run_dir: Path, results: dict[str, list[dict]],
             bits.append(caveat)
         L.append(f"- `{r['model']}`: {'; '.join(bits)}")
     (run_dir / "summary.md").write_text("\n".join(L) + "\n", encoding="utf-8")
-    print(f"Summary: {(run_dir / 'summary.md').relative_to(REPO_ROOT)}")
+    print(f"Summary: {rel_path(run_dir / 'summary.md')}")
     if ranked:
         print(f"Winner:  {ranked[0]['model']} "
               f"({ranked[0]['rate']*100:.0f}% pass)")

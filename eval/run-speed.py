@@ -35,8 +35,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _ollama import (  # noqa: E402
-    REPO_ROOT, generate, get_effective_think, new_run_dir, 
-    prompt_tok_per_s, resolve_model, tok_per_s,
+    REPO_ROOT, add_seed_arg, generate, get_effective_think, new_run_dir,
+    prompt_tok_per_s, rel_path, resolve_model, tok_per_s,
 )
 
 DEFAULT_OUT_ROOT = REPO_ROOT / "eval" / "runs"
@@ -132,7 +132,7 @@ def write_summary(run_dir: Path, rows: list[dict], num_predict: int,
                  f"{r['prompt_tps']:.0f} | {r['load_ms']/1000:.1f}s | "
                  f"{r['size'] or '?'} | {r['proc'] or '?'} |")
     (run_dir / "summary.md").write_text("\n".join(L) + "\n", encoding="utf-8")
-    print(f"\nSummary: {(run_dir / 'summary.md').relative_to(REPO_ROOT)}")
+    print(f"\nSummary: {rel_path(run_dir / 'summary.md')}")
     if ranked:
         print(f"Fastest: {ranked[0]['model']} ({ranked[0]['gen_tps']:.0f} tok/s)")
 
@@ -152,16 +152,19 @@ def main() -> int:
                          "--opt num_thread=12. Overrides the model's Modelfile value "
                          "for this run only (forces a reload).")
     ap.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
+    add_seed_arg(ap)
     args = ap.parse_args()
 
     extra_opts: dict = {}
     for kv in args.opt:
         k, _, v = kv.partition("=")
         extra_opts[k.strip()] = int(v) if v.strip().lstrip("-").isdigit() else v.strip()
+    if args.seed is not None:
+        extra_opts.setdefault("seed", args.seed)  # explicit --opt seed=N still wins
 
     run_dir = new_run_dir(args.out_root) / "speed"
     run_dir.mkdir(parents=True)
-    print(f"Run dir: {run_dir.relative_to(REPO_ROOT)}")
+    print(f"Run dir: {rel_path(run_dir)}")
     print(f"Models:  {', '.join(args.models)}")
     print(f"Load:    {len(PROMPTS)} prompts × {args.attempts} × "
           f"{args.num_predict} tok cap, thinking mode: {args.thinking.upper()}"

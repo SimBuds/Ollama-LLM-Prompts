@@ -112,6 +112,53 @@ def new_run_dir(out_root: Path) -> Path:
     return run_dir
 
 
+def rel_path(p: Path) -> str:
+    """Repo-relative path for display, falling back to the absolute path.
+
+    `Path.relative_to` raises rather than degrading when the target is outside
+    REPO_ROOT — which `--out-root /tmp/...` legitimately is. Every runner prints
+    its run dir this way, so a bare `relative_to` turns a supported flag into a
+    crash.
+    """
+    try:
+        return str(p.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(p)
+
+
+def seed_opts(seed: int | None, base: dict | None = None) -> dict | None:
+    """Merge `seed` into Ollama generate options, or return `base` unchanged.
+
+    Ollama treats `seed` as a decode seed: with a fixed seed and temperature the
+    same prompt yields the same completion, which is what makes a run repeatable.
+    Returns None when there is nothing to send, so callers can pass the result
+    straight through to `generate(options=...)`.
+    """
+    opts = dict(base or {})
+    if seed is not None:
+        opts["seed"] = seed
+    return opts or None
+
+
+def attempt_seed(seed: int | None, attempt: int) -> int | None:
+    """Derive a per-attempt seed from the run seed.
+
+    A single fixed seed reused across attempts makes every attempt of a task
+    byte-identical, so an N-attempt pass rate would report one sample as though
+    it were N — the confidence intervals would be fiction. Offsetting by the
+    attempt number keeps the whole run reproducible while preserving the
+    between-attempt variance these suites are trying to measure.
+    """
+    return None if seed is None else seed + attempt
+
+
+def add_seed_arg(ap) -> None:
+    """Register the shared --seed flag on a runner's ArgumentParser."""
+    ap.add_argument("--seed", type=int, default=None,
+                    help="fix the decode seed so the run is reproducible "
+                         "(default: unset, so Ollama samples freshly each call)")
+
+
 def extract_code(text: str, prefer_lang: str = "python") -> str:
     """
     Pull source out of a model response. Prefers a fenced block tagged with

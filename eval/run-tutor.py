@@ -32,9 +32,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _ollama import (  # noqa: E402
-    REPO_ROOT, ci_str, close_call_note, extract_code, generate,
-    get_effective_think, new_run_dir, resolve_model, run_program, sample_caveat,
-    sandbox_note, spread_note, tok_per_s,
+    REPO_ROOT, add_seed_arg, attempt_seed, ci_str, close_call_note, extract_code, generate,
+    get_effective_think, new_run_dir, rel_path, resolve_model, run_program,
+    sample_caveat, sandbox_note, seed_opts, spread_note, tok_per_s,
 )
 from _judge import judge_scores, reliability_lines  # noqa: E402
 from tutor_tasks import TASKS, TutorTask  # noqa: E402
@@ -99,6 +99,7 @@ def main() -> int:
     ap.add_argument("--judge-rubric", choices=["default", "strict"], default="default",
                     help="strict pushes judges to reserve top marks (harsher grading)")
     ap.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
+    add_seed_arg(ap)
     args = ap.parse_args()
 
     tasks = TASKS if not args.tasks else [t for t in TASKS if t.name in set(args.tasks)]
@@ -120,7 +121,7 @@ def main() -> int:
 
     run_dir = new_run_dir(args.out_root) / "tutor"
     run_dir.mkdir(parents=True)
-    print(f"Run dir: {run_dir.relative_to(REPO_ROOT)}")
+    print(f"Run dir: {rel_path(run_dir)}")
     print(f"Tasks:   {', '.join(t.name for t in tasks)}  ({len(tasks)} × {args.attempts}/model)")
     print(f"Models:  {', '.join(args.models)}")
     print(f"Judges:  {', '.join(judges)}  (leave-one-out: no model grades itself)")
@@ -141,7 +142,9 @@ def main() -> int:
                 print(f"    {task.name:<16} [{n}/{args.attempts}] ", end="", flush=True)
                 t0 = time.monotonic()
                 try:
-                    text, meta = generate(name, task.prompt, args.timeout, think=think)
+                    text, meta = generate(name, task.prompt, args.timeout,
+                                          think=think,
+                                          options=seed_opts(attempt_seed(args.seed, n)))
                 except Exception as e:  # noqa: BLE001
                     print(f"GEN-FAIL: {e}")
                     text, meta = "", {}
@@ -171,7 +174,8 @@ def main() -> int:
         print(f"=== judge: {judge}  ({len(eligible)} responses, skipping its own) ===")
         for i, rec in enumerate(eligible, 1):
             sc = judge_scores(judge, rec["topic"], rec["text"], args.timeout,
-                              JUDGE_TEMPLATE, RUBRIC, strict)
+                              JUDGE_TEMPLATE, RUBRIC, strict,
+                              options=seed_opts(args.seed))
             judge_stats[judge].append(bool(sc.get("_parsed")))
             if sc.get("_parsed"):
                 rec["judge_expl"][judge] = sum(sc[d] for d in RUBRIC)
@@ -283,7 +287,7 @@ def write_summary(run_dir: Path, records: list[dict], tasks: list[TutorTask],
           "the leak gate is deterministic and does not depend on judges.", ""]
     L += reliability_lines(judge_stats, records)
     (run_dir / "summary.md").write_text("\n".join(L) + "\n", encoding="utf-8")
-    print(f"Summary: {(run_dir / 'summary.md').relative_to(REPO_ROOT)}")
+    print(f"Summary: {rel_path(run_dir / 'summary.md')}")
     if ranked:
         print(f"Best tutor: {ranked[0]['model']} (teach {ranked[0]['teach']:.1f}/10)")
 

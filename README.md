@@ -117,9 +117,18 @@ Where changes belong:
 | New content eval task | `eval/content_tasks.py` |
 | New JSON/long-context eval task | `eval/json_tasks.py` |
 | New learning/tutor eval task | `eval/learning_tasks.py` / `eval/tutor_tasks.py` |
+| New prompt-stack rule check | `eval/persona_tasks.py` |
 
 Keep prompt text terse. Every prompt token is spent every turn; prefer removing
-bad rules or tuning `PARAMS` before adding more instructions.
+bad rules or tuning `PARAMS` before adding more instructions. To find out *which*
+rules are worth keeping, run
+`./eval/run-persona.py --models gemma --system-mode baseline` and compare against
+a stacked run: a rule the base model already obeys unprompted is costing tokens
+for nothing.
+
+**After editing anything in `prompts/`, `memory/`, or `knowledge/`, rebuild and
+run `./eval/run-persona.py`.** It is the only suite that tests the stack itself
+rather than the base model behind it.
 
 ## Ollama Server
 
@@ -213,7 +222,15 @@ Individual runners remain available for targeted sweeps:
 ./eval/run-learn.py --models qwen gemma
 ./eval/run-tutor.py --models qwen gemma
 ./eval/run-json.py --models qwen gemma
+./eval/run-persona.py --models qwen gemma
 ```
+
+`run-persona.py` is the prompt-stack regression suite: it checks that the rules in
+`prompts/`, `memory/`, and `knowledge/` are actually obeyed — the identity rule,
+the `memory/user.md` honesty rules about Casey's skill buckets, `Unverified:`
+marking, and output shape. Every other runner measures the base model *through*
+the stack, so this is the only one that notices when a prompt edit breaks a rule.
+Scoring is deterministic regex, no judge.
 
 `run-json.py` is the structured-output test the consumer apps (Jobhunt,
 SEO-LLM) depend on: it constrains decode with a JSON schema, buries facts in a
