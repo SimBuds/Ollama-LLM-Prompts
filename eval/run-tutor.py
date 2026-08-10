@@ -6,9 +6,9 @@ a leak and scores 0. Valid responses are graded by a leave-one-out judge panel
 on scaffolding, concept, calibration, pitfalls, and clarity.
 
 Usage:
-  ./eval/run-tutor.py --models gemma qwen                 # panel = both, leave-one-out
+  ./eval/run-tutor.py --models gemma qwen lite                 # panel = both, leave-one-out
   ./eval/run-tutor.py --models gemma --judges qwen        # grade gemma with qwen
-  ./eval/run-tutor.py --models gemma qwen --tasks two_sum --attempts 1
+  ./eval/run-tutor.py --models gemma qwen lite --tasks two_sum --attempts 1
 
 Leave-one-out means a response is graded only by judges other than its author, so
 every model under test needs at least one judge with a different name. A single
@@ -19,8 +19,11 @@ Output:
     summary.md
     <model>/<task>-attempt-<n>.md   # full response + leak/judge metadata
 
-SAFETY: model-generated code is executed locally. It runs in a subprocess with
-an execution timeout and a fresh temp CWD, but it is NOT containerized.
+SAFETY: the leak check executes model-generated code locally. It is confined by
+bubblewrap where `bwrap` is available — read-only /usr, no network, no $HOME,
+writable CWD only — and falls back to a bare timeout-bounded subprocess where it
+is not. The active mode is printed by `sandbox_note()` at the top of every run;
+see the Safety section of TESTING.md.
 """
 
 from __future__ import annotations
@@ -32,11 +35,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _ollama import (  # noqa: E402
-    REPO_ROOT, add_seed_arg, attempt_seed, ci_str, close_call_note, extract_code, generate,
-    get_effective_think, new_run_dir, rel_path, resolve_model, run_program,
-    sample_caveat, sandbox_note, seed_opts, spread_note, tok_per_s,
+    REPO_ROOT, add_seed_arg, attempt_seed, check_alive, ci_str, close_call_note,
+    extract_code, generate, get_effective_think, new_run_dir, preflight, rel_path,
+    resolve_model, run_program, sample_caveat, sandbox_note, seed_opts,
+    spread_note, tok_per_s,
 )
-from _judge import judge_scores, reliability_lines  # noqa: E402
+from _judge import judge_total, reliability_lines  # noqa: E402
 from tutor_tasks import TASKS, TutorTask  # noqa: E402
 
 CLOSE_PTS = 0.5  # teach scores within half a point (/10) are a tie, not a win
@@ -98,6 +102,12 @@ def main() -> int:
                     help="per-program timeout (s)")
     ap.add_argument("--judge-rubric", choices=["default", "strict"], default="default",
                     help="strict pushes judges to reserve top marks (harsher grading)")
+    ap.add_argument("--judge-repeats", type=int, default=3,
+                    help="score each response this many times per judge and take "
+                         "the median (default 3). 1 restores single-call grading "
+                         "and is faster, but leaves the /10 at the mercy of one "
+                         "sample per judge. The leak gate is unaffected — it is "
+                         "deterministic execution, not judge opinion.")
     ap.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
     add_seed_arg(ap)
     args = ap.parse_args()
@@ -119,6 +129,9 @@ def main() -> int:
               f"Pass --judges with a different model.", file=sys.stderr)
         return 1
 
+    # Fail before creating a run dir, not after filling it with zeros.
+    preflight(list(args.models) + list(judges))
+
     run_dir = new_run_dir(args.out_root) / "tutor"
     run_dir.mkdir(parents=True)
     print(f"Run dir: {rel_path(run_dir)}")
@@ -137,6 +150,7 @@ def main() -> int:
 
         mdir = run_dir / model
         mdir.mkdir()
+        streak = 0  # consecutive connection failures; see check_alive()
         for task in tasks:
             for n in range(1, args.attempts + 1):
                 print(f"    {task.name:<16} [{n}/{args.attempts}] ", end="", flush=True)
@@ -145,9 +159,12 @@ def main() -> int:
                     text, meta = generate(name, task.prompt, args.timeout,
                                           think=think,
                                           options=seed_opts(attempt_seed(args.seed, n)))
+                    streak = 0
                 except Exception as e:  # noqa: BLE001
                     print(f"GEN-FAIL: {e}")
                     text, meta = "", {}
+                    streak += 1
+                    check_alive(streak)
                 elapsed = time.monotonic() - t0
                 leak, leak_reason = solution_leak_check(text, task.tests, args.exec_timeout)
                 status = "LEAK" if leak else "OK"
@@ -162,7 +179,8 @@ def main() -> int:
                     "leak_reason": leak_reason,
                     "elapsed": elapsed,
                     "eval_count": meta.get("eval_count", 0),
-                    "judge_expl": {},
+                    "judge_expl": {},    # judge spec -> median 0–10 (parsed only)
+                    "judge_spread": {},  # judge spec -> max-min across repeats
                 })
         print()
 
@@ -171,14 +189,17 @@ def main() -> int:
     for judge in judges:
         jname = resolve_model(judge)[0]
         eligible = [r for r in records if resolve_model(r["model"])[0] != jname]
-        print(f"=== judge: {judge}  ({len(eligible)} responses, skipping its own) ===")
+        print(f"=== judge: {judge}  ({len(eligible)} responses × "
+              f"{args.judge_repeats} call(s), skipping its own) ===")
         for i, rec in enumerate(eligible, 1):
-            sc = judge_scores(judge, rec["topic"], rec["text"], args.timeout,
-                              JUDGE_TEMPLATE, RUBRIC, strict,
-                              options=seed_opts(args.seed))
-            judge_stats[judge].append(bool(sc.get("_parsed")))
-            if sc.get("_parsed"):
-                rec["judge_expl"][judge] = sum(sc[d] for d in RUBRIC)
+            median, flags, spread = judge_total(
+                judge, rec["topic"], rec["text"], args.timeout, JUDGE_TEMPLATE,
+                RUBRIC, strict, options=seed_opts(args.seed),
+                repeats=args.judge_repeats)
+            judge_stats[judge].extend(flags)
+            if median is not None:
+                rec["judge_expl"][judge] = median
+                rec["judge_spread"][judge] = spread
             if i % 15 == 0 or i == len(eligible):
                 print(f"    {i}/{len(eligible)}")
     print()
@@ -188,7 +209,7 @@ def main() -> int:
         rec["expl"] = sum(scores) / len(scores) if scores else 0.0
         rec["n_judges"] = len(scores)
         rec["teach"] = 0.0 if rec["leak"] else rec["expl"]
-        breakdown = ", ".join(f"{j.split('-')[0]}={v}" for j, v in rec["judge_expl"].items()) or "none"
+        breakdown = ", ".join(f"{j.split('-')[0]}={v:g}" for j, v in rec["judge_expl"].items()) or "none"
         body = (
             f"# {rec['model']} · {rec['task']} · attempt {rec['attempt']}\n\n"
             f"- leak: {'YES' if rec['leak'] else 'no'}\n"
@@ -237,7 +258,9 @@ def write_summary(run_dir: Path, records: list[dict], tasks: list[TutorTask],
          f"- Attempts per task: {args.attempts}",
          f"- Judges: {', '.join(f'`{j}`' for j in judges)} "
          f"(leave-one-out panel — no model grades its own output; rubric 0–2 each: "
-         f"{', '.join(RUBRIC)} → /10, averaged across judges; grading: {args.judge_rubric})",
+         f"{', '.join(RUBRIC)} → /10; {args.judge_repeats} call(s) per judge per "
+         f"response, **median** within a judge then mean across judges; "
+         f"grading: {args.judge_rubric})",
          "- **Gate:** any response containing a complete solution that passes the "
          "hidden tests is treated as a leak and scores 0.",
          "- **Ranking:** teach score first; **leak rate is the first tie-breaker** "
@@ -285,7 +308,7 @@ def write_summary(run_dir: Path, records: list[dict], tasks: list[TutorTask],
           "Parse rate, inter-judge disagreement, and under-judged warnings. The "
           "explanation scores are only as trustworthy as the panel behind them; "
           "the leak gate is deterministic and does not depend on judges.", ""]
-    L += reliability_lines(judge_stats, records)
+    L += reliability_lines(judge_stats, records, args.judge_repeats)
     (run_dir / "summary.md").write_text("\n".join(L) + "\n", encoding="utf-8")
     print(f"Summary: {rel_path(run_dir / 'summary.md')}")
     if ranked:

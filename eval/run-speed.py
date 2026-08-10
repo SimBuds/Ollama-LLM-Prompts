@@ -15,7 +15,7 @@ load time, and a slowdown multiple vs the fastest model.
 
 Usage:
   ./eval/run-speed.py                                  # default models + prompts
-  ./eval/run-speed.py --models qwen gemma
+  ./eval/run-speed.py --models gemma qwen lite
   ./eval/run-speed.py --thinking on                    # force enable thinking
   ./eval/run-speed.py --num-predict 128 --attempts 1   # even faster
   ./eval/run-speed.py --timeout 900                    # for very slow spillover

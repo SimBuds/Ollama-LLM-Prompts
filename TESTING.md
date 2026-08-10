@@ -66,8 +66,8 @@ All runners write to `eval/runs/<UTC>/`.
 | `run-speed.py` | Raw generation tok/s, prompt tok/s, load time, GPU/CPU split | no | 1 per prompt | High for this machine |
 | `run-content.py` | Format/instruction compliance across content tasks (SEO copy, technical explanation, Markdown brief) | no | 5 | Medium-high for prompt discipline |
 | `run-code.py` | Real pass@1 against hidden Python asserts | yes | 5 per task | Medium-high for the covered task shapes |
-| `run-learn.py` | Code + explanation, leave-one-out judge panel | yes | 3 per task | Medium because explanation quality is judge-scored |
-| `run-tutor.py` | Leak-gated tutoring guidance | yes | 3 per task | Medium because leak checks are strong but teaching quality is judge-scored |
+| `run-learn.py` | Code + explanation, leave-one-out judge panel (median of `--judge-repeats` calls per judge) | yes | 3 per task | Medium because explanation quality is judge-scored; the code gate half is deterministic |
+| `run-tutor.py` | Leak-gated tutoring guidance, same judge panel | yes | 3 per task | Medium because teaching quality is judge-scored; the leak gate is deterministic execution and does not depend on judges |
 | `run-json.py` | Schema-constrained JSON + long-context fact recall | no | 3 per task | Medium for structured-output reliability at the tested context sizes |
 | `run-persona.py` | Prompt-stack compliance: identity, skill-bucket honesty, `Unverified:`, output shape | no | 5 per task | Medium-high for the rule shapes encoded; regex scorers miss novel phrasings |
 
@@ -80,6 +80,15 @@ Common flags:
 --seed N
 --out-root PATH
 ```
+
+`run-learn.py` and `run-tutor.py` additionally take `--judges` (override the
+panel) and `--judge-repeats N` (score each response N times per judge and take the
+median; default 3).
+
+Every runner preflights the Ollama server and the model tags before it creates a
+run directory, and aborts mid-run if the server stops answering. See the
+2026-07-28 note in **Historical Notes** for why: a restart during a run previously
+produced complete, exit-0 summaries reporting that every model scored zero.
 
 ### Reproducibility (`--seed`)
 
@@ -126,8 +135,8 @@ Runner-specific flags:
 | `run-speed.py` | `--num-predict N`, `--thinking auto|on|off`, `--opt KEY=VAL` |
 | `run-code.py` | `--tasks ...`, `--exec-timeout SECONDS`, `--thinking auto|on|off` |
 | `run-content.py` | `--tasks ...`, `--prompt-file PATH` (ad-hoc SEO prompt), `--keyword TEXT`, `--thinking auto|on|off` |
-| `run-learn.py` | `--tasks ...`, `--judges ...`, `--judge-rubric default|strict`, `--exec-timeout SECONDS`, `--thinking auto|on|off` |
-| `run-tutor.py` | `--tasks ...`, `--judges ...`, `--judge-rubric default|strict`, `--exec-timeout SECONDS`, `--thinking auto|on|off` |
+| `run-learn.py` | `--tasks ...`, `--judges ...`, `--judge-rubric default|strict`, `--judge-repeats N` (default 3), `--exec-timeout SECONDS`, `--thinking auto|on|off` |
+| `run-tutor.py` | `--tasks ...`, `--judges ...`, `--judge-rubric default|strict`, `--judge-repeats N` (default 3), `--exec-timeout SECONDS`, `--thinking auto|on|off` |
 | `run-json.py` | `--tasks ...`, `--num-ctx N` (default 32768), `--context-pressure normal|medium|high`, `--position default|early|middle|late|all`, `--thinking auto|on|off` |
 | `run-persona.py` | `--tasks ...`, `--system-mode stacked|baseline`, `--thinking auto|on|off` (defaults off) |
 
@@ -181,10 +190,10 @@ Confidence by signal:
 individual runners so routine testing doesn't drift across hand-typed flags.
 
 ```bash
-./eval/run-profile.py smoke --models gemma qwen      # after a model rebuild
-./eval/run-profile.py standard --models gemma qwen   # routine full comparison
-./eval/run-profile.py deep --models gemma qwen       # pre-decision confidence run
-./eval/run-profile.py standard --models gemma qwen --dry-run  # show commands
+./eval/run-profile.py smoke --models gemma qwen lite      # after a model rebuild
+./eval/run-profile.py standard --models gemma qwen lite   # routine full comparison
+./eval/run-profile.py deep --models gemma qwen lite       # pre-decision confidence run
+./eval/run-profile.py standard --models gemma qwen lite --dry-run  # show commands
 ```
 
 | Profile | When to run | Runtime | What it does |
@@ -193,9 +202,14 @@ individual runners so routine testing doesn't drift across hand-typed flags.
 | `standard` | When picking models or after prompt-stack changes | ~1-2 hours | All seven suites; code/content/persona trimmed to 3 attempts so the expanded task set stays in budget |
 | `deep` | Before trusting a close call or promoting a new model | several hours | Full 5-attempt sweeps, both persona system modes, plus medium and high context-pressure JSON runs |
 
-Runtime note: the "under 1 hour" `standard` budget was calibrated on models running
-54/46.7 tok/s fully or mostly on GPU. The current lineup runs ~31 tok/s with both
-models spilling to CPU, so budget 1-2 hours.
+Runtime note: the original "under 1 hour" `standard` budget assumed two models at
+54/46.7 tok/s running fully or mostly on GPU. Two things have since inflated it.
+Two of the three current models spill to CPU, and — the larger factor — the judged
+suites scale with the **square** of the model count: `run-learn.py` and
+`run-tutor.py` generate `models x tasks x attempts` responses and then grade each
+with `models-1` judges x `--judge-repeats` calls. Going 2 -> 3 models roughly
+triples the judging work. Budget ~2 hours for a 3-model `standard`; drop
+`--judge-repeats` to 1 to trade the median back for speed.
 
 The wrapper prints every `summary.md` it produced at the end. Individual runners
 remain usable directly for targeted sweeps (single task, context pressure,
@@ -247,154 +261,161 @@ deciding what to cut.
 
 ## Current Benchmark Snapshot
 
-> **⚠ INVALIDATED 2026-07-27 — retired bases and a sampler confound.**
->
-> Two independent reasons nothing below describes the current lineup:
->
-> 1. **Both bases are gone.** `gemma` is now `gemma4:26b-a4b-it-qat` and `qwen` is
->    now `hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M`.
->    Neither base measured below is installed.
-> 2. **The comparison was confounded.** Only `run-json.py` sends sampler options;
->    every other suite inherits the Modelfile `PARAMS`. On 2026-06-14 those
->    differed — `gemma` at `temperature 0.75` / `presence_penalty 0.2` /
->    `frequency_penalty 0.1` vs `qwen` at `temperature 0.2` / `presence_penalty
->    0.0` / `min_p 0.05`. So the speed, coding, content, learning, and tutor
->    tables measure model × sampler, not model. Both builders now carry identical
->    `PARAMS`, which removes the confound going forward.
->
-> One consequence worth retesting rather than assuming: `gemma`'s repeatable
-> `calc` miss was attributed to an operator-precedence weakness, but it ran with
-> `presence_penalty 0.2` — against this repo's own rule that presence penalty
-> must be zero because code reuses exact variable names. That failure may be a
-> sampler artifact, not a capability limit.
->
-> Retained below as decision history. Rerun `standard` before trusting any pick.
+Full `standard` pass, 2026-07-28, three models, 3 attempts/task, identical
+`PARAMS` across all builders and `OLLAMA_MAX_LOADED_MODELS=1` throughout. This is
+the first pass on this repo where every suite in the table came from one run of
+one lineup on one machine configuration.
 
-Latest full head-to-head: `gemma` (`gemma4:12b-it-q4_K_M`) vs `qwen`
-(`qwen3.6:35b-a3b-mtp-q4_K_M`) on 2026-06-14, a full `standard` pass across all
-six suites (3 attempts/task). The run artifacts are present under `eval/runs/`
-and linked per suite below.
+Read it with two caveats. Samples are small (n = 9-27 per model), so several rows
+carry a tie flag and wide Wilson intervals. And `--seed` does not survive a
+process restart on this box (see **Reproducibility**), which is not theoretical
+here: `lite`'s persona clean rate read 62% then 57% on two runs of the same suite
+against builds differing only by a rule separately measured to change nothing.
+Treat failures and the leak-rate gap as strong signal and a few points either way
+as noise.
 
-Two caveats on reading the tables. First, samples are small (n = 9–27 per
-model): several suites carry a "tied within threshold" flag and wide Wilson
-intervals, so treat one-task or sub-5-point edges as noise. Second, the
-learn/tutor /10 scores rest on a 2-model leave-one-out panel — a single judge
-per response — so they are soft signal until a third judge model joins. Where
-quality ties, the tables break on speed and GPU residency, which favor `gemma`.
+One number in this snapshot is worth reading against its own history. `gemma`
+scored 76% on the persona suite under `OLLAMA_MAX_LOADED_MODELS=2` earlier the
+same day and 43% twice under `=1`. That is almost certainly not the co-residency
+setting — nothing about it should touch rule compliance — but the two readings
+straddle a config change, so it is not a clean measurement of anything and is
+recorded here as an anomaly to re-check rather than a finding.
 
 ### Speed (`run-speed.py`)
 
-Run: `eval/runs/20260614T200816Z/speed/summary.md`
+Run: `eval/runs/20260728T215614Z/speed/summary.md`
 
-| Rank | Model | Think | Gen tok/s | Prompt tok/s | Load | Size | GPU/CPU split |
-|---|---|---|---:|---:|---:|---:|---|
-| 1 | `gemma` | off | 54.0 | 17562 | 11.5s | 7.7 GB | 100% GPU |
-| 2 | `qwen` | off | 46.7 | 1680 | 13.2s | 29 GB | 74%/26% CPU/GPU |
+| Rank | Model | Gen tok/s | Prompt tok/s | Load | Size | GPU/CPU split |
+|---|---|---:|---:|---:|---:|---|
+| 1 | `lite` | 89.4 | 9562 | 7.3s | 5.9 GB | **100% GPU** |
+| 2 | `qwen` | 40.9 | 1563 | 12.5s | 22 GB | 75%/25% CPU/GPU |
+| 3 | `gemma` | 28.3 | 6465 | 7.9s | 15 GB | 66%/34% CPU/GPU |
 
-Finding: Gemma is the fast local default. The widest gap is in prompt ingestion —
-17.6k vs 1.7k tok/s (~10×) — which is why Gemma also wins end-to-end latency on
-the JSON and content suites. Qwen remains usable despite heavy CPU spill.
+Finding: fitting in VRAM is worth more than any architectural advantage here.
+`lite` is 2x `qwen` and 3x `gemma` on generation and leads prompt ingest as well,
+which is the number that matters for agentic tools that ship large contexts.
+`qwen`'s 1563 tok/s prompt ingest is the weak spot to watch — it is 6x slower than
+`lite` at reading input, which shows up as end-to-end latency on the JSON suite
+despite comparable generation speed.
+
+This table also quantifies the co-residency effect that forced the rerun: under
+`OLLAMA_MAX_LOADED_MODELS=2`, `lite` measured 38.6 tok/s at 18%/82% CPU/GPU. The
+model did not change; only what else was resident did.
 
 ### Coding (`run-code.py`)
 
-Run: `eval/runs/20260614T200906Z/code/summary.md`
+Run: `eval/runs/20260728T215725Z/code/summary.md`
 
 | Rank | Model | Pass rate | Passed | Avg s | Tok/s |
 |---|---|---:|---:|---:|---:|
-| 1 | `qwen` | 96% | 26/27 | 3.8 | 59 |
-| 2 | `gemma` | 96% | 26/27 | 4.1 | 54 |
+| 1 | `gemma` | 96% | 26/27 | 6.4 | 31 |
+| 2 | `lite` | 85% | 23/27 | 2.3 | 90 |
+| 3 | `qwen` | 85% | 23/27 | 4.5 | 51 |
 
-Per task (passed / 3):
-
-| Model | two_sum | valid_parentheses | merge_intervals | lru_cache | edit_distance | calc | decode_string | coin_change | flatten_dict |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `qwen` | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 2/3 | 3/3 | 3/3 |
-| `gemma` | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 2/3 | 3/3 | 3/3 | 3/3 |
-
-Finding: Dead tie at 26/27, flagged within the tie threshold (was Qwen 30/30 vs
-Gemma 29/30 on the smaller 6-task set). Each model dropped one attempt: Gemma on
-`calc` (its repeatable operator-precedence weak spot), Qwen on `decode_string`.
-With quality level, the tie-break on speed/GPU residency favors Gemma.
+Finding: `gemma` leads, but `lite` matches the 35B `qwen` at a third of the
+latency. On a wall-clock basis `lite` is the most productive of the three for
+small-function work.
 
 ### Content (`run-content.py`)
 
-Run: `eval/runs/20260614T201250Z/content/summary.md`
+Run: `eval/runs/20260728T220323Z/content/summary.md`
 
 | Rank | Model | Clean rate | Clean | Avg s | Tok/s | Avg words |
 |---|---|---:|---:|---:|---:|---:|
-| 1 | `gemma` | 100% | 9/9 | 6.6 | 54 | 224 |
-| 2 | `qwen` | 78% | 7/9 | 11.7 | 33 | 227 |
+| 1 | `gemma` | 100% | 9/9 | 10.9 | 30 | 206 |
+| 2 | `qwen` | 89% | 8/9 | 11.9 | 30 | 223 |
+| 3 | `lite` | 78% | 7/9 | 4.1 | 90 | 212 |
 
-Per task (clean / 3):
-
-| Model | seo_product | tech_explain | md_brief |
-|---|---:|---:|---:|
-| `gemma` | 3/3 | 3/3 | 3/3 |
-| `qwen` | 3/3 | 1/3 | 3/3 |
-
-Finding: Gemma sweeps 9/9 and is ~2× faster (6.6s vs 11.7s, fully on GPU). Qwen
-regressed on the expanded set, missing `tech_explain` 2/3 on format/instruction
-rules. Gemma keeps the content/SEO pick decisively.
+Finding: `gemma` keeps the content crown it held on the retired bases. Format
+discipline is where model size still pays.
 
 ### Learning (`run-learn.py`)
 
-Run: `eval/runs/20260614T201857Z/learn/summary.md`
+Run: `eval/runs/20260728T221541Z/learn/summary.md`
 
-| Rank | Model | Teach /10 | Code pass | Explanation /10 | Expl. when correct |
-|---|---|---:|---:|---:|---:|
-| 1 | `gemma` | 9.7 | 12/12 | 9.7 | 9.7 |
-| 2 | `qwen` | 9.2 | 11/12 | 10.0 | 10.0 |
+| Rank | Model | Teach /10 | Code pass | Explanation /10 |
+|---|---|---:|---:|---:|
+| 1 | `qwen` | 9.9 | 12/12 | 9.9 |
+| 2 | `gemma` | 9.8 | 12/12 | 9.8 |
+| 3 | `lite` | 7.0 | 9/12 | 9.4 |
 
-Finding: Flipped from the prior pass (Qwen 9.9 vs Gemma 9.4), but within the
-0.5/10 tie threshold. Qwen still writes the better explanation (10.0 vs 9.7); it
-lost the top spot only because it dropped a code gate (11/12). Single-judge
-panel — read as soft signal and effectively a tie.
+Finding: a tie at the top (0.1 apart, inside the threshold). `lite`'s gap is
+entirely the code gate, not teaching quality — its explanations score 9.4 when the
+code runs. Note the ceiling: every model sits at 9.4-9.9 under the default rubric,
+which is a rubric that has stopped discriminating. Rerun with `--judge-rubric
+strict` before treating this suite as a real ranking.
 
 ### Tutor (`run-tutor.py`, leak-gated)
 
-Run: `eval/runs/20260614T202725Z/tutor/summary.md`
+Run: `eval/runs/20260728T223432Z/tutor/summary.md`
 
-| Rank | Model | Teach /10 | Leaks | Explanation /10 | Explanation (no leaks) /10 |
-|---|---|---:|---:|---:|---:|
-| 1 | `gemma` | 6.9 | 3/15 | 8.5 | 8.6 |
-| 2 | `qwen` | 3.8 | 9/15 | 9.3 | 9.5 |
+| Rank | Model | Teach /10 | Leaks | Explanation /10 |
+|---|---|---:|---:|---:|
+| 1 | `gemma` | 9.5 | **0/15** | 9.5 |
+| 2 | `qwen` | 5.6 | 6/15 | 9.1 |
+| 3 | `lite` | 5.3 | 6/15 | 8.9 |
 
-Finding: The decisive split, and it widened. Qwen still explains better when it
-does not leak (9.5 vs 8.6), but it now gives away the full solution 9/15 (60%) of
-the time versus Gemma's 3/15, and the gate zeroes those attempts. Gemma is the
-clear leak-gated tutoring pick.
+Finding: the one decisive result in the whole pass, and the only suite where the
+gap is far outside noise. All three models explain well (8.9-9.5); only `gemma`
+can be asked for help without handing over the answer. The leak gate is
+deterministic execution, not judge opinion, which makes this the most trustworthy
+number in the snapshot.
 
 ### JSON / long-context (`run-json.py`)
 
-Run: `eval/runs/20260614T201535Z/json/summary.md`
+Run: `eval/runs/20260728T221011Z/json/summary.md`
 
-| Rank | Model | Score | Valid JSON | Schema OK | Fact rate | Avg s | Tok/s |
-|---|---|---:|---:|---:|---:|---:|---:|
-| 1 | `gemma` | 100% | 100% | 100% | 100% | 2.9 | 50 |
-| 2 | `qwen` | 100% | 100% | 100% | 100% | 6.7 | 48 |
+| Rank | Model | Score | Schema OK | Fact rate | Avg s | Tok/s |
+|---|---|---:|---:|---:|---:|---:|
+| 1 | `lite` | 100% | 100% | 100% | 1.9 | 83 |
+| 2 | `qwen` | 100% | 100% | 100% | 7.2 | 42 |
+| 3 | `gemma` | 100% | 100% | 100% | 6.0 | 29 |
 
-Per task: both models scored 3/3 on all seven tasks (`jd_extract`,
-`needle_recall`, `decline_guard`, `conflicting_correction`, `enum_classify`,
-`multi_extract`, `no_infer`).
+Finding: schema-constrained decode is solved for all three at this context size —
+a three-way 100%, so the suite no longer discriminates on correctness and breaks
+purely on latency, where `lite` is ~3x faster. To make this suite informative
+again, raise `--context-pressure`.
 
-Finding: both clear the structured-output suite at 100% (schema and facts) on the
-expanded 7-task set. Tied on quality, Gemma wins end-to-end latency (2.9s vs
-6.7s) on the strength of its prompt-ingest speed, so it stays the JSON default.
+### Prompt stack (`run-persona.py`)
+
+Run: `eval/runs/20260728T220725Z/persona/summary.md` (stacked),
+`eval/runs/20260728T230429Z/persona/summary.md` (baseline)
+
+| Rank | Model | Clean rate | Clean |
+|---|---|---:|---:|
+| 1 | `qwen` | 95% | 20/21 |
+| 2 | `lite` | 62% | 13/21 |
+| 3 | `gemma` | 43% | 9/21 |
+
+Finding: the model that wins the most quality suites is the worst at obeying the
+stack, and the ranking here is uncorrelated with every other suite. `gemma` fails
+`model_origin`, `unknown_fact`, `unverified`, and `fields_echo`; `qwen` holds all
+but `familiar_skill`. If the prompt stack's rules matter for a given use, that is
+an argument for `qwen` regardless of who wins coding.
+
+Per-rule stacked-vs-baseline contribution is in **Measuring what the prompt stack
+contributes** above; the 2026-07-28 result is that only `bash_block` was free, and
+it was deleted.
 
 ## Current Picks
 
-> **⚠ All rows below rest on the retired, sampler-confounded 2026-06-14 run.**
-> There is no defensible pick for any use until `standard` is rerun on the current
-> bases. Treat this table as history, not guidance.
+From the 2026-07-28 `standard` pass above.
 
 | Use | Pick | Basis |
 |---|---|---|
-| Fast local default | `gemma` | 54 tok/s, 100% GPU; ~10× Qwen's prompt-ingest speed. |
-| Content / SEO / copy | `gemma` | 9/9 clean vs Qwen 7/9, ~2× faster. |
-| Structured JSON / consumer-app smoke tests | `gemma` | Tied Qwen at 100%, ~2× faster latency (2.9s vs 6.7s). |
-| Coding puzzles / small functions | `gemma` / `qwen` (tie) | Tied 26/27; break on speed/GPU → Gemma. Gemma's only miss is `calc`. |
-| Learning explanations | `gemma` / `qwen` (tie) | Gemma 9.7 vs Qwen 9.2 (within threshold); Qwen explains better but dropped a code gate. |
-| Leak-gated tutoring | `gemma` | 6.9/10 with 3/15 leaks vs Qwen's 3.8 with 9/15. |
+| Fast local default | `lite` | 89 tok/s at 100% GPU — 2× `qwen`, 3× `gemma`, no CPU spill. |
+| Agentic tools (Cline) | `lite` | Prompt ingest 9562 tok/s vs `gemma` 6465, `qwen` 1563. |
+| Coding puzzles / small functions | `gemma` | 26/27 vs 23/27 for both others; `lite` matches `qwen` at a third of the latency. |
+| Content / SEO / copy | `gemma` | 9/9 clean vs `qwen` 8/9, `lite` 7/9. |
+| Leak-gated tutoring | `gemma` | **0/15 leaks** vs 6/15 for both others; teach 9.5 vs 5.6/5.3. The one decisive gap in the pass, and deterministic rather than judge-scored. |
+| Learning explanations | `qwen` / `gemma` (tie) | 9.9 vs 9.8, inside the threshold; both 12/12 on the code gate. Rubric is saturated — rerun `--judge-rubric strict` before trusting the order. |
+| Structured JSON / consumer-app smoke tests | `lite` | Three-way 100%; `lite` ~3× faster (1.9s vs 6.0/7.2s). |
+| Prompt-stack fidelity | `qwen` | 95% clean vs `lite` 62%, `gemma` 43%. Uncorrelated with every other suite. |
+
+There is no overall winner, and the split is the useful result: `gemma` takes the
+quality suites, `lite` takes everything speed-shaped while staying competitive on
+quality, and `qwen` is the only model that reliably obeys the prompt stack. The
+surprise is `lite` — a dense 9B taking three rows purely because it fits in VRAM.
 
 ## Hardware
 
@@ -415,10 +436,11 @@ less punishing because only a subset of parameters is active per token.
 
 | Model | Status | Notes |
 |---|---|---|
-| `gemma` (`gemma4:26b-a4b-it-qat`) | current | Rebuilt 2026-07-27. 26B A4B MoE, QAT, 15 GB. **No benchmark data.** |
-| `qwen` (`hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M`) | current | Rebuilt 2026-07-27. 35B A3B MoE, 22 GB. **No benchmark data.** Uncensored tune, so it works against `prompts/safety.md` by construction; expect a worse leak rate on `run-tutor.py` and treat the exec-runner risk note above as live. |
+| `gemma` (`gemma4:26b-a4b-it-qat`) | current | Rebuilt 2026-07-28. 26B A4B MoE, QAT, 15 GB. |
+| `qwen` (`qwen3.6:35b-a3b-mtp-q4_K_M`) | current | Rebuilt 2026-07-28. 35B A3B MoE, 22 GB. Official release; `build-qwen` was reverted to it from the uncensored tune below. |
+| `lite` (`qwen3.5:9b`) | current | Added 2026-07-28. Dense 9B, 7 GB — the only model that fits entirely in 10 GB. Exists as a no-spillover speed control and as the third judge, which is what makes inter-judge disagreement computable at all. |
+| `qwen` (`hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M`) | reverted 2026-07-28, never benchmarked | Targeted by `build-qwen` on 2026-07-27; the base was never pulled, so the builder's preflight failed and no run ever used it. Reverted rather than pulled: an uncensored tune works against `prompts/safety.md` by construction, so the shared stack would spend tokens every turn fighting the base's own tuning, and the persona suite would be measuring that fight instead of the stack. If it is ever wanted, it belongs on its own tag with its own stack, not swapped under the shared one. |
 | `gemma` (`gemma4:12b-it-q4_K_M`) | retired 2026-07-27 | Base no longer installed. Won/tied all six suites on 2026-06-14, but that run was sampler-confounded. |
-| `qwen` (`qwen3.6:35b-a3b-mtp-q4_K_M`) | retired 2026-07-27 | Base no longer installed. Tied coding/JSON; leaked 60% in leak-gated tutoring. |
 | `granite` (`granite4.1:8b-Q5_K_M`) | dropped | Strong prior coding runs, but no longer leads the current lineup. |
 | `qwen-custom` (`qwen3.5:9b`) | removed | Fast 9B-era thinking model; superseded by current Qwen3.6 MoE results. |
 | `ministral-custom` | removed | Strong historical #2; removed after Gemma/Granite consolidation. |
@@ -430,6 +452,117 @@ less punishing because only a subset of parameters is active per token.
 
 The notes below are retained for decision history. Prefer the current snapshot
 above when choosing a model today.
+
+### Lineup revert, third model, and measurement hardening (2026-07-28)
+
+Four things changed, in the order they unblocked each other.
+
+**`build-qwen` reverted to the official base.** The 2026-07-27 retarget pointed at
+`hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M`, which was
+never pulled — so `build-qwen` had been failing its own preflight and the `qwen`
+tag did not exist. `qwen3.6:35b-a3b-mtp-q4_K_M`, which the docs described as "no
+longer installed", was in fact installed. Reverted to it. That also settles the
+`prompts/safety.md` contradiction without a benchmark: a base tuned to refuse
+nothing, running under a stack whose job is operational caution, means every turn
+pays tokens for a fight, and `run-persona.py` would be scoring that fight rather
+than the stack. An uncensored base is a separate tag with a separate stack, not a
+swap under the shared one.
+
+**`lite` (`qwen3.5:9b`) added as a third model.** It is the only model in the
+lineup that fits entirely in 10 GB, so it anchors the leaderboard with a
+no-spillover control — without it, every speed number is a measurement of CPU
+spill and there is nothing to compare that cost against. It also fixes a
+measurement dead end the previous entry flagged as an open item: leave-one-out
+grading over a 2-model lineup leaves exactly one judge per response, so
+inter-judge disagreement printed `n/a` and could never print anything else. Three
+models means two judges per response.
+
+**Judge scoring got a median.** `_judge.judge_total()` scores each response
+`--judge-repeats` times (default 3) per judge and takes the median, then averages
+across judges. Median rather than mean because a judge that misfires misfires
+hard — a 2 read as a 0 — and a mean lets one bad sample drag the score. The two
+noise axes are now separated in the summaries: *within-judge* spread (absorbed by
+the median) and *between-judge* σ (the panel). A failed parse returns `None`, not
+0, so a judge returning garbage is missing data rather than a penalty against the
+model it was grading.
+
+**A dead server can no longer masquerade as a failing model.** Mid-session,
+`systemctl restart ollama` landed during a run. Every runner caught the
+connection errors per-attempt, recorded each as a failure, ran to completion,
+exited 0, and wrote summaries reporting that all three models scored 0.0/10 —
+authoritative-looking artifacts describing nothing but a closed socket. Three
+suites were discarded. `_ollama.py` now has `preflight()` (abort before creating
+a run dir if the server is down or a model tag is missing, mirroring
+`build-common.sh`'s base-model check) and `check_alive()` (abort after
+`DEAD_SERVER_STREAK` consecutive connection failures when the server confirms
+down). Standing lesson, and the same shape as the `Unverified:` contamination
+lesson below: **a runner that cannot distinguish "the model failed" from "nothing
+was listening" will happily produce a confident number for neither.**
+
+Two operational notes from the same session. `OLLAMA_MAX_LOADED_MODELS` moved
+2 → 1: at 2, resident models compete for the same 10 GB and a model's measured
+throughput depends on which other model happens to be loaded beside it, which is
+co-residency, not model quality. Measured directly — `lite` ran 38.6 tok/s
+alongside a second resident model and 93 tok/s with the card to itself. Any pass
+that straddles that change is mixing machine states and has to be rerun, which is
+the same class of error as the 2026-06-14 sampler confound. And the rebuild-then-
+verify rule is now `make check` plus an optional pre-commit hook rather than a
+line of documentation, with `eval/promote.py` regenerating the README leaderboard
+from `eval/runs/` so the hand-maintained tables cannot drift again.
+
+#### What the judge changes actually bought — a partial negative result
+
+The third judge delivered: inter-judge disagreement printed a real number for the
+first time (σ 0.17/10 on learn across 36 responses, σ 0.36/10 on tutor across 45),
+where a 2-model lineup could only ever print `n/a`. Parse rates were 100% on every
+judge except one `lite` call out of 90.
+
+The median did not. Within-judge spread averaged **0.14/10 on learn and 0.34/10 on
+tutor**, with 0 of 72 and 2 of 90 judge×response medians varying by ≥2 points
+between repeats. `--judge-repeats 3` tripled judging time — the dominant cost in a
+`standard` pass — to absorb almost nothing.
+
+The honest reading is that this is not yet evidence the repeats are useless, because
+the measurement is confounded by a ceiling: under the default rubric every model
+scored 8.9-9.9/10, and a metric pinned to its maximum cannot show variance. The
+right next step is to rerun with `--judge-rubric strict` and re-measure the spread
+where the scores have room to move. If it stays near zero there, drop the default
+to 1 and keep the flag for rubric changes. **Do not conclude the repeats are free
+insurance from a run where nothing could have moved.**
+
+#### Per-rule stack contribution, and one deletion
+
+`run-persona.py` stacked vs `--system-mode baseline`, 3 attempts × 3 models, so
+each rule scores out of 9:
+
+| Rule | Stacked | Baseline | Buys | Read |
+|---|---:|---:|---:|---|
+| `identity` | 9/9 | 0/9 | +9 | load-bearing |
+| `model_origin` | 7/9 | 0/9 | +7 | load-bearing |
+| `familiar_skill` | 5/9 | 1/9 | +4 | load-bearing but leaky — no model holds it 3/3 |
+| `unknown_fact` | 6/9 | 3/9 | +3 | load-bearing on `qwen`/`lite`; `gemma`'s clean baseline is the known artifact |
+| `unverified` | 3/9 | 0/9 | +3 | `qwen` only; 0/3 on `gemma` and `lite` stacked *and* unstacked |
+| `fields_echo` | 3/9 | 0/9 | +3 | `qwen` only, same shape |
+| `bash_block` | 9/9 | 9/9 | **0** | free — deleted |
+
+Only `bash_block` was cut. It is the sole rule measured at zero contribution
+twice, on two different lineups (2 models on 2026-07-27, 3 models here) — all
+bases fence commands in `bash` without a `$` prefix unprompted. The deletion was
+verified through `make check`: `bash_block` still scores 3/3 on all three models
+with the rule gone. The persona task was kept as a regression guard on that
+assumption rather than deleted with the rule.
+
+`unverified` and `fields_echo` were **not** cut despite failing on two of three
+models. They are not free — deleting them would cost `qwen` a rule it does obey —
+so they are rewrite candidates, not cut candidates, and the previous entry's
+lesson applies to any rewrite: the eval task must not share its subject with an
+example in the stack.
+
+The uncomfortable result is the ranking itself. `gemma` wins coding, content, and
+tutoring while scoring **43% on the prompt stack**; `qwen` wins the stack at 95%
+while losing most quality suites. Prompt-stack fidelity is uncorrelated with
+capability here, so "which model is best" genuinely depends on whether the rules
+in `prompts/` matter for the task at hand.
 
 ### Prompt-stack baseline and the `Unverified:` experiment (2026-07-27)
 
@@ -522,6 +655,15 @@ leaves a single judge and inter-judge disagreement stays `n/a`; no runner accept
 `--seed`, so nothing is reproducible; results are Markdown-only with `eval/runs/`
 gitignored, so there is no machine-readable history and the leaderboards are
 hand-maintained (which is how the drift above went unnoticed).
+
+> **Status as of 2026-07-28.** Prompt-stack suite: closed by `run-persona.py`.
+> Two-model judge panel: closed by adding `lite`. `--seed`: added, but only
+> partially closed — it pins sampling within a process and does not survive a
+> restart (see **Reproducibility**). Hand-maintained leaderboards: closed by
+> `eval/promote.py`. Still open: results remain Markdown-only, so `promote.py`
+> parses summaries rather than reading a machine-readable record, and cannot tell
+> which base a run used — its staleness guard compares run dates, which is a
+> proxy. A `result.json` per run is the real fix.
 
 ### Archived model-selection decision (2026-05-31)
 

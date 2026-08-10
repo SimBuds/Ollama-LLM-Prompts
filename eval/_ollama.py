@@ -90,6 +90,77 @@ def generate(model: str, prompt: str, timeout: int, think: bool = False,
     return body.get("response", ""), body
 
 
+# --- server liveness ----------------------------------------------------------
+# Every runner catches per-call errors and records the attempt as a failure, which
+# is right for a model that times out on one prompt and wrong for a server that is
+# simply down: the run completes, exits 0, and writes a summary reporting that
+# every model scored 0. That happened on 2026-07-28 when `systemctl restart ollama`
+# landed mid-run and three suites produced authoritative-looking zeros. A summary
+# that cannot tell "the model failed" from "nothing was listening" is worse than no
+# summary, so the runners now preflight the server and abort once it is clearly
+# gone rather than grinding out a fiction.
+
+TAGS_URL = OLLAMA_URL.replace("/api/generate", "/api/tags")
+# Consecutive connection-level failures before a runner gives up. Above 1 so a
+# single dropped socket or a model reload stall doesn't kill a long run.
+DEAD_SERVER_STREAK = 5
+
+
+def server_up(timeout: int = 5) -> bool:
+    """True if the Ollama HTTP API answers. Used for preflight and abort checks."""
+    try:
+        with urllib.request.urlopen(TAGS_URL, timeout=timeout) as resp:
+            return resp.status == 200
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def preflight(models: list[str]) -> None:
+    """Abort before generating if the server is down or a model tag is missing.
+
+    Mirrors build-common.sh's base-model preflight: fail loudly and early rather
+    than leaving artifacts that look like a completed run.
+    """
+    if not server_up():
+        raise SystemExit(
+            f"ERROR: no Ollama server at {OLLAMA_URL}.\n"
+            f"  Check it:  systemctl status ollama\n"
+            f"  Start it:  sudo systemctl start ollama")
+    try:
+        with urllib.request.urlopen(TAGS_URL, timeout=10) as resp:
+            have = {m.get("name", "") for m in
+                    json.loads(resp.read().decode("utf-8")).get("models", [])}
+    except Exception:  # noqa: BLE001
+        return  # server answered once; don't block a run on a flaky tag listing
+    have |= {n.split(":")[0] for n in have}  # `gemma` matches `gemma:latest`
+    missing = [m for m in (resolve_model(s)[0] for s in models) if m not in have]
+    if missing:
+        raise SystemExit(
+            f"ERROR: model(s) not found in Ollama: {', '.join(missing)}\n"
+            f"  Build them:  make build\n"
+            f"  Installed:   {', '.join(sorted(have)) or '(none)'}")
+
+
+class DeadServer(SystemExit):
+    """Raised when consecutive connection failures mean the server is gone."""
+
+
+def check_alive(streak: int) -> None:
+    """Abort the run when `streak` consecutive calls have failed to connect.
+
+    Called by runners from their per-attempt exception handler. A model that is
+    merely slow raises TimeoutError against a live server, so this only fires when
+    the server itself stops answering.
+    """
+    if streak >= DEAD_SERVER_STREAK and not server_up():
+        raise DeadServer(
+            f"ERROR: aborting — {streak} consecutive connection failures and the "
+            f"Ollama server at {OLLAMA_URL} is not responding.\n"
+            f"  Nothing was written for this run; results so far would have been "
+            f"all-zero and misleading.\n"
+            f"  Check it:  systemctl status ollama")
+
+
 def tok_per_s(meta: dict) -> float:
     n = meta.get("eval_count", 0)
     return n / (meta.get("eval_duration", 1) / 1e9) if n else 0.0

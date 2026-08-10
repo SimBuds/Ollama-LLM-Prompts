@@ -9,8 +9,8 @@ This is a real pass@1 measurement, not a regex proxy. The summary ranks models
 by overall pass rate (tie-break: speed) and declares a winner.
 
 Usage:
-  ./eval/run-code.py --models gemma qwen      # all tasks, 5 attempts/task
-  ./eval/run-code.py --models gemma qwen --attempts 3
+  ./eval/run-code.py --models gemma qwen lite      # all tasks, 5 attempts/task
+  ./eval/run-code.py --models gemma qwen lite --attempts 3
   ./eval/run-code.py --models gemma
   ./eval/run-code.py --tasks two_sum lru_cache
   ./eval/run-code.py --exec-timeout 10       # per-program wall clock
@@ -20,9 +20,11 @@ Output:
     summary.md
     <model>/<task>-attempt-<n>.py     # extracted code + appended tests
 
-SAFETY: model-generated code is executed locally. It runs in a subprocess with
-a wall-clock timeout and a fresh temp CWD, but it is NOT containerized. Only run
-against models/tasks you trust.
+SAFETY: model-generated code is executed locally, confined by bubblewrap where
+`bwrap` is available — read-only /usr, no network, no $HOME, writable CWD only.
+Where it is not, execution falls back to a bare timeout-bounded subprocess, which
+is not isolation. The active mode is printed by `sandbox_note()` at the top of
+every run; see the Safety section of TESTING.md.
 """
 
 from __future__ import annotations

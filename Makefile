@@ -1,0 +1,64 @@
+# Rebuild-then-verify automation.
+#
+# The rule this enforces used to be manual discipline in README.md: "after
+# editing anything in prompts/, memory/, or knowledge/, rebuild and run
+# run-persona.py". Manual discipline is the kind that gets skipped on the one
+# commit that breaks the identity rule, so it lives here instead.
+#
+#   make build   rebuild only the models whose prompt stack changed
+#   make check   rebuild those, then run the persona suite over all of them
+#   make persona run the persona suite without rebuilding
+#   make hook    install the pre-commit hook that runs `make check`
+#   make clean   drop the build stamps, forcing a full rebuild next time
+#
+# Every builder assembles the SAME prompt stack, so any edit under prompts/,
+# memory/, or knowledge/ invalidates every model. The per-model stamp still
+# matters: it means editing one builder's PARAMS rebuilds only that model, and a
+# no-op `make check` costs nothing but the persona run.
+
+MODELS  := gemma qwen lite
+STACK   := $(shell find prompts memory knowledge -type f -name '*.md' 2>/dev/null | sort)
+STAMPS  := $(addprefix models/,$(addsuffix /.built,$(MODELS)))
+
+# Attempts per persona task in `make check`. Low by default so the hook stays
+# usable as a gate; the real measurement is ./eval/run-profile.py.
+ATTEMPTS ?= 3
+
+.PHONY: all build check persona hook clean
+
+all: build
+
+build: $(STAMPS)
+
+# A model is stale when the shared stack, the shared assembly, or its own
+# builder is newer than its stamp. ollama create is cheap when only the SYSTEM
+# block changed — it relayers on top of the already-pulled base.
+models/%/.built: build-% build-common.sh $(STACK)
+	@echo "=== rebuilding $* (prompt stack or builder changed) ==="
+	./build-$*
+	@mkdir -p $(dir $@) && touch $@
+
+check: build
+	@echo "=== persona suite: does the rebuilt stack still hold? ==="
+	./eval/run-persona.py --models $(MODELS) --attempts $(ATTEMPTS)
+
+persona:
+	./eval/run-persona.py --models $(MODELS) --attempts $(ATTEMPTS)
+
+hook:
+	@printf '%s\n' \
+	  '#!/usr/bin/env bash' \
+	  '# Installed by `make hook`. Rebuilds any model whose prompt stack changed' \
+	  '# and runs the persona suite before the commit lands.' \
+	  '# Skip a known-bad-but-intentional commit with: git commit --no-verify' \
+	  'set -euo pipefail' \
+	  'if git diff --cached --name-only | grep -qE "^(prompts|memory|knowledge)/|^build-"; then' \
+	  '  echo "pre-commit: prompt stack touched — running make check"' \
+	  '  exec make -C "$$(git rev-parse --show-toplevel)" check' \
+	  'fi' \
+	  > .git/hooks/pre-commit
+	@chmod +x .git/hooks/pre-commit
+	@echo "installed .git/hooks/pre-commit (bypass with git commit --no-verify)"
+
+clean:
+	rm -f $(STAMPS)

@@ -16,10 +16,10 @@ Ranking metric is the composite "task score" = mean over attempts of
 count — that's the failure mode that silently ships bad data in the real apps.
 
 Usage:
-  ./eval/run-json.py --models qwen gemma
+  ./eval/run-json.py --models gemma qwen lite
   ./eval/run-json.py --models gemma --tasks jd_extract needle_recall
-  ./eval/run-json.py --models qwen gemma --num-ctx 16384 --attempts 5
-  ./eval/run-json.py --models qwen gemma --context-pressure medium   # longer docs
+  ./eval/run-json.py --models gemma qwen lite --num-ctx 16384 --attempts 5
+  ./eval/run-json.py --models gemma qwen lite --context-pressure medium   # longer docs
   ./eval/run-json.py --models gemma --tasks needle_recall --position all  # early/mid/late
 
 num_ctx defaults to 32768 to mirror jobhunt's gateway pin (without it Ollama

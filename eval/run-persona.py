@@ -16,7 +16,7 @@ is "clean" iff every rule its task checks holds. The summary groups failures by
 the stack rule they implicate, so a red row points at the file to fix.
 
 Usage:
-  ./eval/run-persona.py --models gemma qwen
+  ./eval/run-persona.py --models gemma qwen lite
   ./eval/run-persona.py --models gemma --tasks identity familiar_skill
   ./eval/run-persona.py --models gemma --attempts 5
 
@@ -45,9 +45,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _ollama import (  # noqa: E402
-    REPO_ROOT, add_seed_arg, attempt_seed, ci_str, close_call_note, generate,
-    get_effective_think, new_run_dir, rel_path, resolve_model, sample_caveat,
-    seed_opts, spread_note, tok_per_s,
+    REPO_ROOT, add_seed_arg, attempt_seed, check_alive, ci_str, close_call_note,
+    generate, get_effective_think, new_run_dir, preflight, rel_path,
+    resolve_model, sample_caveat, seed_opts, spread_note, tok_per_s,
 )
 from persona_tasks import TASKS, PersonaTask  # noqa: E402
 
@@ -73,7 +73,8 @@ def run_attempt(model: str, task: PersonaTask, n: int, total: int, timeout: int,
                               system=system, options=seed_opts(attempt_seed(seed, n)))
     except (urllib.error.URLError, TimeoutError) as e:
         print(f"FAIL ({time.monotonic()-t0:.1f}s): {e}")
-        return {"ok": False, "error": str(e), "elapsed_s": time.monotonic() - t0}
+        return {"ok": False, "error": str(e), "elapsed_s": time.monotonic() - t0,
+                "conn_error": isinstance(e, urllib.error.URLError)}
     elapsed = time.monotonic() - t0
     s = task.evaluate(text)
     tag = "clean" if s["clean"] else "VIOLATION"
@@ -108,6 +109,9 @@ def main() -> int:
     tasks = [TASKS[k] for k in (args.tasks or list(TASKS))]
     system = BASELINE_SYSTEM if args.system_mode == "baseline" else None
 
+    # Fail before creating a run dir, not after filling it with zeros.
+    preflight(list(args.models))
+
     run_dir = new_run_dir(args.out_root) / "persona"
     run_dir.mkdir(parents=True)
     print(f"Run dir: {rel_path(run_dir)}")
@@ -122,10 +126,16 @@ def main() -> int:
         mdir = run_dir / model
         mdir.mkdir()
         rs: list[dict] = []
+        streak = 0  # consecutive connection failures; see check_alive()
         for task in tasks:
             for n in range(1, args.attempts + 1):
                 r = run_attempt(model, task, n, args.attempts, args.timeout,
                                 args.thinking, system, args.seed)
+                if r.get("conn_error"):
+                    streak += 1
+                    check_alive(streak)
+                else:
+                    streak = 0
                 if r.get("ok"):
                     body = (f"# {model} · {task.key} · attempt {n}\n\n"
                             f"- rule: {task.rule}\n"

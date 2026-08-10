@@ -9,7 +9,8 @@ teaching explanation. Scoring is two-part:
      alternative, pitfall, clarity) by a LEAVE-ONE-OUT JUDGE PANEL: every
      response is scored by all judge models EXCEPT the one that wrote it, and
      the scores are averaged. This removes the self-grading bias a single judge
-     would introduce.
+     would introduce. Each judge scores a response `--judge-repeats` times and
+     its MEDIAN is taken, so one anomalous grading cannot move the number.
 
 A "teach score" per attempt = explanation score when the code passes, else 0
 (a great explanation of broken code doesn't help you learn correct coding).
@@ -21,9 +22,9 @@ generate every response first (each model loaded once), then judge by looping
 over the panel (each judge loaded once).
 
 Usage:
-  ./eval/run-learn.py --models gemma qwen                 # panel = both, leave-one-out
+  ./eval/run-learn.py --models gemma qwen lite                 # panel = both, leave-one-out
   ./eval/run-learn.py --models gemma --judges qwen        # grade gemma with qwen
-  ./eval/run-learn.py --models gemma qwen --tasks lru_cache edit_distance --attempts 5
+  ./eval/run-learn.py --models gemma qwen lite --tasks lru_cache edit_distance --attempts 5
 
 Leave-one-out means a response is graded only by judges other than its author, so
 every model under test needs at least one judge with a different name. A single
@@ -44,11 +45,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _ollama import (  # noqa: E402
-    REPO_ROOT, add_seed_arg, attempt_seed, ci_str, close_call_note, extract_code, generate,
-    get_effective_think, new_run_dir, rel_path, resolve_model, run_program,
-    sample_caveat, sandbox_note, seed_opts, spread_note, tok_per_s,
+    REPO_ROOT, add_seed_arg, attempt_seed, check_alive, ci_str, close_call_note,
+    extract_code, generate, get_effective_think, new_run_dir, preflight, rel_path,
+    resolve_model, run_program, sample_caveat, sandbox_note, seed_opts,
+    spread_note, tok_per_s,
 )
-from _judge import judge_scores, reliability_lines  # noqa: E402
+from _judge import judge_total, reliability_lines  # noqa: E402
 from learning_tasks import TASKS  # noqa: E402
 
 DEFAULT_OUT_ROOT = REPO_ROOT / "eval" / "runs"
@@ -90,6 +92,11 @@ def main() -> int:
     ap.add_argument("--exec-timeout", type=int, default=10)
     ap.add_argument("--judge-rubric", choices=["default", "strict"], default="default",
                     help="strict pushes judges to reserve top marks (harsher grading)")
+    ap.add_argument("--judge-repeats", type=int, default=3,
+                    help="score each response this many times per judge and take "
+                         "the median (default 3). 1 restores single-call grading "
+                         "and is faster, but leaves the /10 at the mercy of one "
+                         "sample per judge.")
     ap.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
     add_seed_arg(ap)
     args = ap.parse_args()
@@ -111,6 +118,9 @@ def main() -> int:
               f"Pass --judges with a different model.", file=sys.stderr)
         return 1
 
+    # Fail before creating a run dir, not after filling it with zeros.
+    preflight(list(args.models) + list(judges))
+
     run_dir = new_run_dir(args.out_root) / "learn"
     run_dir.mkdir(parents=True)
     print(f"Run dir: {rel_path(run_dir)}")
@@ -130,6 +140,7 @@ def main() -> int:
 
         mdir = run_dir / model
         mdir.mkdir()
+        streak = 0  # consecutive connection failures; see check_alive()
         for task in tasks:
             for n in range(1, args.attempts + 1):
                 print(f"    {task.name:<16} [{n}/{args.attempts}] ", end="", flush=True)
@@ -138,9 +149,12 @@ def main() -> int:
                     text, meta = generate(name, task.prompt, args.timeout,
                                           think=think,
                                           options=seed_opts(attempt_seed(args.seed, n)))
+                    streak = 0
                 except Exception as e:  # noqa: BLE001
                     print(f"GEN-FAIL: {e}")
                     text, meta = "", {}
+                    streak += 1
+                    check_alive(streak)
                 elapsed = time.monotonic() - t0
                 code = extract_code(text, "python")
                 src = f"{code}\n\n# --- hidden tests ---\n{task.tests}\n"
@@ -157,20 +171,24 @@ def main() -> int:
     # never grades a response written by its own model. Collect each judge's
     # explanation total per record, then average across judges.
     for rec in records:
-        rec["judge_expl"] = {}   # judge spec -> 0–10 total (parsed judges only)
+        rec["judge_expl"] = {}    # judge spec -> median 0–10 total (parsed only)
+        rec["judge_spread"] = {}  # judge spec -> max-min across its repeats
     judge_stats: dict[str, list[bool]] = {j: [] for j in judges}  # parse-rate tracking
     strict = args.judge_rubric == "strict"
     for judge in judges:
         jname = resolve_model(judge)[0]
         eligible = [r for r in records if resolve_model(r["model"])[0] != jname]
-        print(f"=== judge: {judge}  ({len(eligible)} responses, skipping its own) ===")
+        print(f"=== judge: {judge}  ({len(eligible)} responses × "
+              f"{args.judge_repeats} call(s), skipping its own) ===")
         for i, rec in enumerate(eligible, 1):
-            sc = judge_scores(judge, rec["topic"], rec["text"], args.timeout,
-                              JUDGE_TEMPLATE, RUBRIC, strict,
-                              options=seed_opts(args.seed))
-            judge_stats[judge].append(bool(sc.get("_parsed")))
-            if sc.get("_parsed"):
-                rec["judge_expl"][judge] = sum(sc[d] for d in RUBRIC)
+            median, flags, spread = judge_total(
+                judge, rec["topic"], rec["text"], args.timeout, JUDGE_TEMPLATE,
+                RUBRIC, strict, options=seed_opts(args.seed),
+                repeats=args.judge_repeats)
+            judge_stats[judge].extend(flags)
+            if median is not None:
+                rec["judge_expl"][judge] = median
+                rec["judge_spread"][judge] = spread
             if i % 15 == 0 or i == len(eligible):
                 print(f"    {i}/{len(eligible)}")
     print()
@@ -181,7 +199,7 @@ def main() -> int:
         rec["expl"] = sum(scores) / len(scores) if scores else 0.0
         rec["n_judges"] = len(scores)
         rec["teach"] = rec["expl"] if rec["passed"] else 0.0
-        breakdown = ", ".join(f"{j.split('-')[0]}={v}" for j, v in rec["judge_expl"].items()) or "none"
+        breakdown = ", ".join(f"{j.split('-')[0]}={v:g}" for j, v in rec["judge_expl"].items()) or "none"
         body = (f"# {rec['model']} · {rec['task']} · attempt {rec['attempt']}\n\n"
                 f"- code: {'PASS' if rec['passed'] else 'FAIL ('+rec['reason']+')'}\n"
                 f"- explanation: {rec['expl']:.1f}/10  (panel of {rec['n_judges']}: {breakdown})\n\n"
@@ -215,7 +233,9 @@ def write_summary(run_dir, records, tasks, args, judges, judge_stats) -> None:
          f"- Attempts per task: {args.attempts}",
          f"- Judges: {', '.join(f'`{j}`' for j in judges)} "
          f"(leave-one-out panel — no model grades its own output; rubric 0–2 each: "
-         f"{', '.join(RUBRIC)} → /10, averaged across judges; grading: {args.judge_rubric})",
+         f"{', '.join(RUBRIC)} → /10; {args.judge_repeats} call(s) per judge per "
+         f"response, **median** within a judge then mean across judges; "
+         f"grading: {args.judge_rubric})",
          "- **Teach score** = explanation (/10) counted only when the code passes "
          "execution; mean over all attempts. This is the ranking metric.", ""]
     if ranked:
@@ -256,7 +276,7 @@ def write_summary(run_dir, records, tasks, args, judges, judge_stats) -> None:
     L += ["", "### Judge reliability", "",
           "Parse rate, inter-judge disagreement, and under-judged warnings. The "
           "teach/explanation scores are only as trustworthy as the panel behind them.", ""]
-    L += reliability_lines(judge_stats, records)
+    L += reliability_lines(judge_stats, records, args.judge_repeats)
     (run_dir / "summary.md").write_text("\n".join(L) + "\n", encoding="utf-8")
     print(f"Summary: {rel_path(run_dir / 'summary.md')}")
     if ranked:

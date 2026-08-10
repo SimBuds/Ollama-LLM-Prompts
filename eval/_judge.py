@@ -7,6 +7,21 @@ judge prompt (with an optional stricter rubric), parsing the judge's JSON scores
 and the reliability stats — parse rate, inter-judge disagreement, under-judged
 warnings — that say how much to trust the resulting /10 numbers. The rubric
 dimensions and base template stay in each runner; only the mechanics live here.
+
+Two independent noise sources sit under every /10 in these suites, and they need
+different fixes:
+
+  * BETWEEN judges — one model's taste is not a measurement. Fixed structurally by
+    the panel: leave-one-out over a 3-model lineup gives 2 judges per response.
+    With only 2 models it gave 1, and inter-judge disagreement was uncomputable.
+  * WITHIN a judge — the same judge re-reading the same response does not always
+    return the same JSON. Fixed by `repeats`: score N times and take the MEDIAN,
+    so one anomalous sample cannot move the number. Median, not mean, because a
+    judge that misfires tends to misfire hard (a 2 read as a 0), and a mean lets
+    that single outlier drag the score.
+
+`judge_total()` handles the within-judge half and reports the spread it saw, so
+the summaries can show whether the repeats were needed or were noise-free.
 """
 
 from __future__ import annotations
@@ -61,13 +76,54 @@ def judge_scores(judge_model: str, topic: str, response: str, timeout: int,
     return out
 
 
-def reliability_lines(judge_stats: dict[str, list[bool]], records: list[dict]) -> list[str]:
+def judge_total(judge_model: str, topic: str, response: str, timeout: int,
+                template: str, rubric: list[str], strict: bool = False,
+                options: dict | None = None,
+                repeats: int = 1) -> tuple[float | None, list[bool], float]:
+    """Score one response with `judge_model`, `repeats` times, and take the median.
+
+    Returns `(median_total, parse_flags, spread)`:
+      * `median_total` — median of the parsed /10 totals, or None when every
+        repeat failed to parse (the caller must then treat the response as
+        ungraded by this judge, NOT as a zero — a judge that returns garbage is
+        missing data, and scoring it 0 would punish the model being graded for
+        the judge's failure).
+      * `parse_flags` — one bool per repeat, so parse rate still counts every
+        call rather than collapsing a 1-of-3 success into a clean "parsed".
+      * `spread` — max minus min across parsed totals, the within-judge noise
+        this repeat loop absorbed. 0.0 when fewer than 2 repeats parsed.
+
+    With a fixed seed every repeat would otherwise be byte-identical and the
+    median would be a single sample wearing a disguise, so each repeat offsets
+    the seed. Unseeded runs already vary per call and are left alone.
+    """
+    totals: list[int] = []
+    flags: list[bool] = []
+    for i in range(max(1, repeats)):
+        opts = dict(options) if options else None
+        if opts and "seed" in opts:
+            opts["seed"] = opts["seed"] + i
+        sc = judge_scores(judge_model, topic, response, timeout, template,
+                          rubric, strict, options=opts)
+        flags.append(bool(sc.get("_parsed")))
+        if sc.get("_parsed"):
+            totals.append(sum(sc[d] for d in rubric))
+    if not totals:
+        return None, flags, 0.0
+    return statistics.median(totals), flags, float(max(totals) - min(totals))
+
+
+def reliability_lines(judge_stats: dict[str, list[bool]], records: list[dict],
+                      repeats: int = 1) -> list[str]:
     """Markdown bullet lines describing how trustworthy the judging was.
 
-    `judge_stats` maps judge spec -> list of per-grading parsed/failed booleans.
-    `records` must carry `judge_expl` (judge->/10) and `n_judges`. Reports parse
-    rate per judge, mean inter-judge disagreement (only meaningful when a response
-    had ≥2 judges), and a warning for responses scored by fewer than two judges.
+    `judge_stats` maps judge spec -> list of per-call parsed/failed booleans (one
+    entry per repeat, not per response). `records` must carry `judge_expl`
+    (judge -> median /10) and `n_judges`; `judge_spread` (judge -> within-judge
+    max-min) is used when present. Reports parse rate per judge, within-judge
+    noise absorbed by the repeat median, mean inter-judge disagreement (only
+    meaningful when a response had ≥2 judges), and a warning for responses scored
+    by fewer than two judges.
     """
     L: list[str] = []
     for j, flags in judge_stats.items():
@@ -75,7 +131,23 @@ def reliability_lines(judge_stats: dict[str, list[bool]], records: list[dict]) -
         ok = sum(flags)
         pct = (ok / n * 100) if n else 0.0
         flag = "  ⚠ judge often unparseable" if n and ok / n < 0.8 else ""
-        L.append(f"- `{j}` parse rate: {ok}/{n} ({pct:.0f}%){flag}")
+        calls = f"{n} calls" if repeats == 1 else f"{n} calls, {repeats}/response"
+        L.append(f"- `{j}` parse rate: {ok}/{n} ({pct:.0f}%) over {calls}{flag}")
+
+    if repeats > 1:
+        spreads = [s for r in records for s in r.get("judge_spread", {}).values()]
+        if spreads:
+            mean_spread = statistics.mean(spreads)
+            noisy = sum(1 for s in spreads if s >= 2)
+            L.append(f"- Within-judge noise: mean spread {mean_spread:.2f}/10 "
+                     f"across {len(spreads)} judge×response medians "
+                     f"({repeats} calls each); {noisy} varied by ≥2 points "
+                     f"between repeats. The reported score is the median, so "
+                     f"that variation is absorbed rather than propagated.")
+    else:
+        L.append("- Within-judge noise: not measured — 1 call per judge per "
+                 "response. Re-run with `--judge-repeats 3` to score each "
+                 "response several times and take the median.")
 
     multi = [list(r["judge_expl"].values()) for r in records
              if r.get("n_judges", 0) >= 2]
@@ -85,8 +157,9 @@ def reliability_lines(judge_stats: dict[str, list[bool]], records: list[dict]) -
                  f"{len(multi)} responses graded by ≥2 judges")
     else:
         L.append("- Inter-judge disagreement: n/a — each response had <2 judges. "
-                 "With a 2-model lineup, leave-one-out leaves a single judge per "
-                 "response; add a 3rd model to cross-check scores.")
+                 "Leave-one-out over an N-model lineup leaves N-1 judges per "
+                 "response, so a 2-model run leaves one; add a 3rd model "
+                 "(`--models gemma qwen lite`) to cross-check scores.")
 
     under = sum(1 for r in records if r.get("n_judges", 0) < 2)
     if under:

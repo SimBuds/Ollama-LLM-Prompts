@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL_NAME="qwen"
-# Official Qwen3.6 MoE release. Briefly retargeted (2026-07-27) at an uncensored
-# community tune; reverted 2026-07-28 because that tune works against
-# prompts/safety.md by construction — the stack spends tokens every turn fighting
-# the model's own tuning. An uncensored base needs its own tag and its own prompt
-# stack, not a swap under the shared one.
-BASE_MODEL="qwen3.6:35b-a3b-mtp-q4_K_M"
+MODEL_NAME="lite"
+# Dense ~9B, ~6.6 GB — the only model in the lineup that fits entirely in the
+# 3080's 10 GB alongside a 32k KV cache, so it anchors the leaderboard with a
+# no-CPU-spillover speed baseline. It is also the third judge: with only two
+# models, leave-one-out grading leaves exactly one judge per response and
+# inter-judge disagreement can never be computed.
+BASE_MODEL="qwen3.5:9b"
 
 # Modelfile extras (TEMPLATE/RENDERER/PARSER).
 EXTRAS=()
 
 # Context: 262144 - 131072 - 65536 - 32768 - 16384 - 8192 - 4096
 
-# Shared baseline params — deliberately IDENTICAL to build-gemma. See the note
-# there: differing samplers across builders confound the head-to-head.
+# Shared baseline params — deliberately IDENTICAL to build-gemma/build-qwen. See
+# the note in build-gemma: differing samplers across builders confound the
+# head-to-head. 32k fits in VRAM here, so there is no reason to shrink it.
 PARAMS=(
   'num_ctx 32768'         # 32k: sweet spot for multi-file local tasks; matches run-json.py's pin
   'temperature 0.2'       # Low temperature forces strict compliance with code syntax and tool tags

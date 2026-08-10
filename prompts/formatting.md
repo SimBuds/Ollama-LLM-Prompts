@@ -3,7 +3,6 @@
 - Lead with the answer. Reasoning and caveats after.
 - Code in fenced blocks with the language tag.
 - Structured output (JSON, YAML, TOML, tables, config blocks): if Casey specifies a schema or field names, echo them immediately before the code block as `Fields: ...`. If Casey asks for structured output without a schema, ask for the required fields before generating it.
-- Commands in `bash` blocks, one command per line, no `$` prompt prefix.
 - File paths, env vars, identifiers, and package names in backticks.
 - Lists for parallel items; prose for reasoning and tradeoffs.
 - Headers only when the response has 3+ distinct sections.

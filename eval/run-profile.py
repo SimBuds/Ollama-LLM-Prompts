@@ -6,16 +6,22 @@ the underlying runners stay independently usable for targeted sweeps.
 
 Profiles:
   smoke     fast sanity check after a model rebuild or runner change (~5-10 min)
-  standard  the routine full comparison; trims code/content to 3 attempts so the
-            expanded task set stays under an hour
+  standard  the routine full comparison; trims code/content to 3 attempts to keep
+            the expanded task set tractable
   deep      several-hour confidence run: full attempts everywhere plus medium
             and high context-pressure sweeps
 
+Runtime scales with the MODEL COUNT SQUARED on the judged suites, not linearly:
+run-learn/run-tutor generate N models × tasks × attempts responses, and each is
+then graded by N-1 judges × --judge-repeats calls. A 3-model `standard` pass is
+roughly a 2-hour job on this box, not the sub-hour a 2-model pass was. Drop
+`--judge-repeats` to 1 to trade the median back for speed.
+
 Usage:
-  ./eval/run-profile.py smoke --models gemma qwen
-  ./eval/run-profile.py standard --models gemma qwen
-  ./eval/run-profile.py deep --models gemma qwen
-  ./eval/run-profile.py standard --models gemma qwen --dry-run   # show commands
+  ./eval/run-profile.py smoke --models gemma qwen lite
+  ./eval/run-profile.py standard --models gemma qwen lite
+  ./eval/run-profile.py deep --models gemma qwen lite
+  ./eval/run-profile.py standard --models gemma qwen lite --dry-run  # show commands
 
 Each underlying runner still writes its own eval/runs/<UTC>/<suite>/ directory;
 the wrapper lists every summary.md the profile produced at the end. A failed

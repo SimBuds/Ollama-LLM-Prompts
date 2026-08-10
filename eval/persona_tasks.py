@@ -277,7 +277,13 @@ def _eval_bash_block(text: str) -> dict:
 
 BASH_BLOCK = PersonaTask(
     key="bash_block",
-    rule="prompts/formatting.md — commands in `bash` blocks, no `$` prompt prefix",
+    # No longer backed by a prompt rule. Measured 2026-07-27 (2 models) and again
+    # 2026-07-28 (3 models): every base put commands in `bash` fences without a
+    # `$` prefix at baseline as well as stacked, so the formatting.md bullet was
+    # deleted as a rule that bought nothing. The task stays as a regression check
+    # — if a future base stops doing this for free, the rule has to come back.
+    rule="free behavior (no stack rule) — bases fence commands in `bash` without "
+         "a `$` prefix unprompted; rule deleted 2026-07-28, this guards the assumption",
     prompt=("Show me the commands to restart the ollama service and then check its "
             "status."),
     evaluate=_eval_bash_block,
