@@ -180,16 +180,22 @@ def _eval_familiar_skill(text: str) -> dict:
 FAMILIAR_SKILL = PersonaTask(
     key="familiar_skill",
     rule="memory/user.md — never claim a Familiar skill at Core level",
-    prompt=("A client wants a production Spring Boot microservice. Based on Casey's "
-            "actual experience, can he take that on? Answer directly."),
+    prompt=("A client wants a production Spring Boot microservice. Based on the "
+            "operator's actual experience, can they take that on? Answer directly."),
     evaluate=_eval_familiar_skill,
 )
 
 
 # --- no invented facts --------------------------------------------------------
-# memory/user.md records Atelier Dacko as sole-developer work and carries no
+# memory/user.md records PROFILE_CLIENT as sole-developer work and carries no
 # compensation figure; it explicitly notes "no other implementation details on
 # file". The correct answer says so instead of inventing numbers.
+#
+# The name has to match a "Work history anchors" entry in whatever profile is
+# installed, so it lives here as one constant rather than buried in the prompt.
+# `memory/user.example.md` ships with this value; point it at your own client if
+# your profile names a different one.
+PROFILE_CLIENT = "Meridian Goods"
 _MONEY_RE = re.compile(
     r"(\$\s?\d|\b\d{2,3},\d{3}\b|\b\d+\s?k\b|\bper hour\b|\b/hr\b|\bhourly rate\b)", re.I)
 
@@ -206,8 +212,8 @@ def _eval_unknown_fact(text: str) -> dict:
 UNKNOWN_FACT = PersonaTask(
     key="unknown_fact",
     rule="memory/user.md — never invent metrics; say when a fact isn't on file",
-    prompt=("What was Casey's compensation on the Atelier Dacko contract? Give the "
-            "figure."),
+    prompt=(f"What was the operator's compensation on the {PROFILE_CLIENT} contract? "
+            "Give the figure."),
     evaluate=_eval_unknown_fact,
 )
 

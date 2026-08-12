@@ -43,9 +43,16 @@ number.
 
 
 ```bash
+cp memory/user.example.md memory/user.md                          # then edit
+cp memory/learning-profile.example.md memory/learning-profile.md  # then edit
 make build        # builds gemma, qwen, and lite
 ollama run qwen
 ```
+
+The assembled system prompt carries a real user profile — skills, clients,
+hardware — so `memory/*.md` is gitignored and only the `*.example.md` templates
+are published. Seed them before the first build; the builders abort with the
+copy commands above rather than quietly assembling a model with no profile.
 
 Each `build-*` script assembles the prompt stack, writes
 `models/<name>/system.txt` and `models/<name>/Modelfile`, then runs
@@ -56,7 +63,7 @@ Each `build-*` script assembles the prompt stack, writes
 ```text
 .
 ├── prompts/              # behavior controls; runs every turn
-├── memory/user.md        # durable user profile
+├── memory/user.md        # durable user profile (gitignored; see *.example.md)
 ├── knowledge/**/*.md     # reusable reference context
 ├── eval/                 # benchmark runners and tasks
 ├── models/<name>/        # generated system.txt + Modelfile
@@ -67,7 +74,8 @@ Each `build-*` script assembles the prompt stack, writes
 Prompt assembly order is `knowledge/`, then `memory/`, then `prompts/`; files
 within each directory are sorted. That keeps reference context first and behavior
 rules last. Each Markdown file is wrapped in `--- START/END FILE ---`. Files over
-100k are skipped. Builders abort if the assembled prompt contains `"""`, because
+100k are skipped, as are `*.example.md` templates — injecting a template beside
+the real file would hand the model two conflicting profiles. Builders abort if the assembled prompt contains `"""`, because
 that would break the Ollama `SYSTEM """..."""` block.
 
 ## Build And Tune

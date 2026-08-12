@@ -432,6 +432,11 @@ Models that fit 100% on GPU are fast. Dense spillover usually collapses
 generation speed because DDR4 bandwidth becomes the bottleneck. MoE spillover is
 less punishing because only a subset of parameters is active per token.
 
+The **Base-model speed survey (2026-08-11)** isolates this: a dense 27B and a
+larger 35B A3B MoE spill nearly identically (74% vs 76% CPU), and the dense one
+runs 4.6× slower. Size on disk does not predict throughput once spilling starts —
+active parameters per token does.
+
 ## Models Tested
 
 | Model | Status | Notes |
@@ -440,6 +445,9 @@ less punishing because only a subset of parameters is active per token.
 | `qwen` (`qwen3.6:35b-a3b-mtp-q4_K_M`) | current | Rebuilt 2026-07-28. 35B A3B MoE, 22 GB. Official release; `build-qwen` was reverted to it from the uncensored tune below. |
 | `lite` (`qwen3.5:9b`) | current | Added 2026-07-28. Dense 9B, 7 GB — the only model that fits entirely in 10 GB. Exists as a no-spillover speed control and as the third judge, which is what makes inter-judge disagreement computable at all. |
 | `qwen` (`hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M`) | reverted 2026-07-28, never benchmarked | Targeted by `build-qwen` on 2026-07-27; the base was never pulled, so the builder's preflight failed and no run ever used it. Reverted rather than pulled: an uncensored tune works against `prompts/safety.md` by construction, so the shared stack would spend tokens every turn fighting the base's own tuning, and the persona suite would be measuring that fight instead of the stack. If it is ever wanted, it belongs on its own tag with its own stack, not swapped under the shared one. |
+| `gemma4:12b-it-qat` | installed 2026-08-11, speed-only | Not in the lineup and not built into a tag. 7.3 GB, 98% on GPU, 59.7 tok/s — fastest base after `lite`. Quality untested. Distinct from the retired `gemma4:12b-it-q4_K_M` below: different quant (QAT). |
+| `qwen3.6:27b-mtp-q4_K_M` | installed 2026-08-11, speed-only | Not in the lineup. Dense 27B, 18 GB, 8.6 tok/s under spillover — 4.6× slower than the larger 35B A3B MoE. Batch-only on this box. |
+| `gemma4:31b-it-qat` | speed-only | Not in the lineup. Dense 31B, 18 GB, 3.1 tok/s under 72% CPU spill. Slowest base measured here; effectively unusable interactively. |
 | `gemma` (`gemma4:12b-it-q4_K_M`) | retired 2026-07-27 | Base no longer installed. Won/tied all six suites on 2026-06-14, but that run was sampler-confounded. |
 | `granite` (`granite4.1:8b-Q5_K_M`) | dropped | Strong prior coding runs, but no longer leads the current lineup. |
 | `qwen-custom` (`qwen3.5:9b`) | removed | Fast 9B-era thinking model; superseded by current Qwen3.6 MoE results. |
@@ -452,6 +460,61 @@ less punishing because only a subset of parameters is active per token.
 
 The notes below are retained for decision history. Prefer the current snapshot
 above when choosing a model today.
+
+### Base-model speed survey (2026-08-11)
+
+Six installed Ollama bases timed with `run-speed.py`, thinking OFF then ON.
+`OLLAMA_MAX_LOADED_MODELS=1`, 2 prompts × 1 attempt, `num_predict=200`, RTX 3080.
+
+Runs: `eval/runs/20260811T212044Z/speed/` (OFF), `eval/runs/20260811T212540Z/speed/` (ON)
+
+| Model | Runtime size | GPU/CPU split | Gen tok/s OFF | Gen tok/s ON | Prompt tok/s OFF | Load |
+|---|---:|---|---:|---:|---:|---:|
+| `qwen3.5:9b` | 5.5 GB | **100% GPU** | 90.5 | 99.8 | 444 | 5.0s |
+| `gemma4:12b-it-qat` | 7.3 GB | **2%/98% CPU/GPU** | 59.7 | 59.7 | 374 | 7.0s |
+| `qwen3.6:35b-a3b-mtp-q4_K_M` | 22 GB | 76%/24% | 39.9 | 43.4 | 88 | 16.0s |
+| `gemma4:26b-a4b-it-qat` | 15 GB | 66%/34% | 30.8 | 29.0 | 64 | 25.1s |
+| `qwen3.6:27b-mtp-q4_K_M` | 18 GB | 74%/26% | 8.6 | 9.4 | 17 | 11.5s |
+| `gemma4:31b-it-qat` | 18 GB | 72%/28% | 3.1 | 3.2 | 14 | 10.8s |
+
+**This measures bases, not the lineup.** Models were called by raw Ollama name,
+so there is no repo system prompt and no builder `PARAMS` — these numbers are not
+directly comparable to the **Current Benchmark Snapshot**, which times the built
+`gemma`/`qwen`/`lite` tags. Read it as a survey of what the hardware does with
+each base, not as a leaderboard revision.
+
+Finding: once a model spills, **active parameters per token — not file size —
+sets throughput.** `qwen3.6:27b-mtp-q4_K_M` is smaller than the 35B MoE (18 GB vs
+22 GB runtime) and spills about the same (74% vs 76% CPU) yet generates 4.6×
+slower, because it is dense and every parameter is read per token across DDR4.
+`gemma4:31b-it-qat` is the same story at 3.1 tok/s. Both spillover dense models
+are batch-only in practice: a 500-token reply costs ~1 min and ~2.7 min
+respectively. This is the sharpest evidence yet for the **Hardware** section's
+dense-vs-MoE claim, which previously rested on models that also differed in size.
+
+Finding: `gemma4:12b-it-qat` is the only new base worth lineup consideration. At
+7.3 GB it lands 98% on GPU and reaches 59.7 tok/s with 374 tok/s prompt ingest —
+second only to `lite`, and the fastest non-9B option here. Untested on quality;
+speed alone does not earn a slot.
+
+Two limits on these numbers, both load-bearing:
+
+- **The thinking columns show nothing.** `run-speed.py` caps output at
+  `num_predict=200` in both modes, so every model emitted exactly 200 tokens and
+  wall-clock was equal by construction. Thinking changes how *many* tokens a model
+  emits, not how fast it emits them, so this script cannot see its cost. The ON
+  column is a consistency check, not evidence that thinking is free. Measuring the
+  real cost needs uncapped generation compared on `eval_count` and wall-clock —
+  see the open item below.
+- **Sub-10% gaps are noise.** n = 2 per model with no warmup. `qwen3.5:9b`
+  measured 97.0 tok/s in an earlier run the same day and 90.5 here under identical
+  settings; `gemma4:26b-a4b` reading lower ON than OFF (29.0 vs 30.8) is that same
+  drift. Rank ordering is far outside the noise; adjacent rows within ~10% are not
+  distinguishable.
+
+Open item: no tokens-to-completion benchmark exists. Scope it to the three
+non-spillover-dense models — uncapped on `gemma4:31b-it-qat` at 3 tok/s would
+exceed the 900s timeout on a normal thinking pass.
 
 ### Lineup revert, third model, and measurement hardening (2026-07-28)
 
@@ -582,11 +645,11 @@ contribution (stacked minus baseline, out of 10 across both models):
 | `bash_block` | 0 | already free — both models comply unprompted |
 | `unverified` | 0 | broken — 0/10 stacked *and* unstacked |
 
-The sharpest single result: unstacked, `qwen` answered "what was Casey's
-compensation on the Atelier Dacko contract" with **"$12,000"** plus a fabricated
-legal citation. `memory/user.md` is what prevents that. Note that `gemma`'s clean
-baseline on that task is an artifact — with no profile it has never heard of Casey,
-so it declines for the wrong reason.
+The sharpest single result: unstacked, `qwen` answered the `unknown_fact` probe —
+compensation on a contract the profile names but attaches no figure to — with
+**"$12,000"** plus a fabricated legal citation. `memory/user.md` is what prevents
+that. Note that `gemma`'s clean baseline on that task is an artifact — with no
+profile it has never heard of the operator, so it declines for the wrong reason.
 
 #### The `Unverified:` rewrite — a negative result
 

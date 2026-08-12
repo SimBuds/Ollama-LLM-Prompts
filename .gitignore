@@ -6,3 +6,9 @@ eval/runs/
 
 # Regenerable build artifacts (system.txt + Modelfile), produced by build-*.
 models/
+
+# Personal context. The assembled prompt carries a real profile — skills,
+# clients, hardware — so the working copies stay untracked and only the
+# `*.example.md` templates are published.
+memory/*.md
+!memory/*.example.md

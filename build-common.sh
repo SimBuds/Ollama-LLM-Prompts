@@ -22,6 +22,19 @@ if ! ollama list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qxF "$BASE_MODEL"; 
   exit 1
 fi
 
+# Preflight: the personal context files are gitignored, so a fresh clone has the
+# `*.example.md` templates and nothing else. Assembling anyway would build a model
+# whose User Profile section is simply absent — the persona suite would then score
+# rules against context the model never received, which reads as model failure.
+if ! compgen -G "$AI_ROOT/memory/*.md" >/dev/null \
+   || [ -z "$(find "$AI_ROOT/memory" -name '*.md' ! -name '*.example.md' -print -quit)" ]; then
+  echo "ERROR: no personal context in memory/ — only templates." >&2
+  echo "  Seed it:  cp memory/user.example.md memory/user.md" >&2
+  echo "            cp memory/learning-profile.example.md memory/learning-profile.md" >&2
+  echo "  Then edit both with your own details (they stay gitignored)." >&2
+  exit 1
+fi
+
 OUT_DIR="$AI_ROOT/models/$MODEL_NAME"
 SYSTEM_FILE="$OUT_DIR/system.txt"
 MODELFILE="$OUT_DIR/Modelfile"
@@ -35,8 +48,11 @@ mkdir -p "$OUT_DIR"
   echo
 
   # Inject reference first, user context second, behavior rules last.
+  # `*.example.md` are tracked templates for people cloning the repo; the real
+  # files sit beside them untracked. Injecting both would hand the model two
+  # conflicting User Profile sections, so the templates are skipped here.
   for dir in "$AI_ROOT/knowledge" "$AI_ROOT/memory" "$AI_ROOT/prompts"; do
-    find "$dir" -type f -name '*.md' -size -100k -print0 2>/dev/null \
+    find "$dir" -type f -name '*.md' ! -name '*.example.md' -size -100k -print0 2>/dev/null \
       | sort -z \
       | while IFS= read -r -d '' f; do
           rel="${f#"$AI_ROOT/"}"

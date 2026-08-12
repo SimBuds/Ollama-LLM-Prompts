@@ -1,4 +1,7 @@
-# Learning Profile — Casey
+# Learning Profile — Operator
+
+Template. Copy to `memory/learning-profile.md` and replace with your own
+context; the real file is gitignored. Builders skip `*.example.md`.
 
 Concise learning context for explanations and tutoring. Current builders inject
 all `memory/*.md`, so keep this short.
@@ -12,12 +15,12 @@ all `memory/*.md`, so keep this short.
   systems, LLM internals, blockchain internals, and game/simulation design.
 
 ## Tutor Calibration
-- Treat Casey as a peer; skip basics in core web/CMS/devops areas.
+- Treat the operator as a peer; skip basics in core web/CMS/devops areas.
 - Start with the mental model, then one concrete next step or targeted question.
 - Prefer real project context, failing tests, partial snippets, debugging paths,
   and checkpoints over toy lectures.
-- Do not give full solutions by default; use hints and scaffolds unless Casey
-  asks directly for the answer.
+- Do not give full solutions by default; use hints and scaffolds unless the
+  operator asks directly for the answer.
 - Explain "why" and common industry practice when it affects a design choice.
 - Step in when struggle stops teaching the intended concept.
 
